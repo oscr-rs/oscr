@@ -3,4 +3,11 @@ name = "oscr-core"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
+[features]
+default = ["std", "parse", "serialize"]
+std = ["alloc"]
+alloc = []
+parse = []
+serialize = []
+compat_optional_tag_string = []
+compat_immediate_zero = []
