@@ -432,22 +432,31 @@ mod tests {
     #[cfg(all(feature = "parse", feature = "alloc"))]
     #[test]
     fn spec_1_0_examples() {
-        use crate::ZStr;
+        use crate::{ZStr, ZString};
 
         let oscillator =
             parse_bytes::<MessageRef>(b"/oscillator/4/frequency\x00,f\x00\x00\x43\xdc\x00\x00")
                 .unwrap();
         assert_eq!(oscillator.pattern(), "/oscillator/4/frequency");
+        assert_eq!(
+            oscillator.args().collect::<Result<Vec<_>, _>>().unwrap(),
+            [ArgRef::Float(440.0f32)],
+        );
         let owned = oscillator.to_owned().unwrap();
-        assert_eq!(owned.args(), [Arg::Float(440.0f32)]);
+        assert_eq!(
+            owned,
+            Message {
+                pattern: Pattern::new("/oscillator/4/frequency").to_owned(),
+                args: vec![Arg::Float(440.0f32)]
+            }
+        );
 
         let foo = parse_bytes::<MessageRef>(
             b"/foo\x00\x00\x00\x00,iisff\x00\x00\x00\x00\x03\xe8\xff\xff\xff\xff\x68\x65\x6c\x6c\x6f\x00\x00\x00\x3f\x9d\xf3\xb6\x40\xb5\xb2\x2d",
         ).unwrap();
         assert_eq!(foo.pattern(), "/foo");
-        let owned = foo.to_owned().unwrap();
         assert_eq!(
-            owned.args(),
+            foo.args().collect::<Result<Vec<_>, _>>().unwrap(),
             [
                 ArgRef::Int32(1000),
                 ArgRef::Int32(-1),
@@ -455,6 +464,20 @@ mod tests {
                 ArgRef::Float(1.234f32),
                 ArgRef::Float(5.678f32),
             ]
+        );
+        let owned = foo.to_owned().unwrap();
+        assert_eq!(
+            owned,
+            Message {
+                pattern: Pattern::new("/foo").to_owned(),
+                args: vec![
+                    Arg::Int32(1000),
+                    Arg::Int32(-1),
+                    Arg::String(ZString::from("hello")),
+                    Arg::Float(1.234f32),
+                    Arg::Float(5.678f32),
+                ]
+            }
         );
     }
 }
