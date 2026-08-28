@@ -1,3 +1,4 @@
+#[cfg(feature = "serialize")]
 use super::wire::{Serialize, Write};
 
 use core::fmt::{self, Display};
@@ -132,6 +133,7 @@ impl From<SystemTime> for TimeTag {
     }
 }
 
+#[cfg(feature = "serialize")]
 impl Serialize for TimeTag {
     fn serialize<W: Write>(&self, w: &mut W) -> Result<(), W::Error> {
         w.write_be_u64(self.0)

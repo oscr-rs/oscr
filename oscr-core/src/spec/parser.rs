@@ -51,12 +51,14 @@ impl Display for Error {
 
 impl core::error::Error for Error {}
 
+#[cfg(feature = "parse")]
 #[derive(Debug, Clone)]
 pub struct Parser<'a> {
     original: &'a [u8],
     view: &'a [u8],
 }
 
+#[cfg(feature = "parse")]
 impl<'a> Parser<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
         Self {
@@ -144,17 +146,23 @@ impl<'a> Parser<'a> {
         Ok(f64::from_be_bytes(self.take_array::<8>()?))
     }
 
-    pub fn take_zstr(&mut self) -> Result<&'a ZStr, Error> {
-        if let Some(start) = self.view.iter().position(|&x| x == 0) {
-            let end = self.view[start..]
-                .iter()
-                .position(|&x| x != 0)
-                .map_or(self.view.len(), |offset| start + offset);
-            Ok(unsafe { ZStr::from_bytes_unchecked(&self.view[end..]) })
-        } else {
-            Err(Error::ZStr {
-                position: self.position(),
-            })
-        }
+    pub fn take_zstr_padded(&mut self) -> Result<&'a ZStr, Error> {
+        use super::wire::padding;
+        let zpos = self.view.iter().position(|&b| b == 0).ok_or(Error::ZStr {
+            position: self.position(),
+        })?;
+        let bytes = &self.view[..zpos];
+        let len = zpos + 1;
+        let skip = len + padding(len).len();
+        self.advance(skip)?;
+        Ok(unsafe { ZStr::from_bytes_unchecked(bytes) })
+    }
+
+    pub fn take_padded(&mut self, len: usize) -> Result<&'a [u8], Error> {
+        use super::wire::padding;
+        let bytes = self.take(len)?;
+        let skip = padding(len).len();
+        self.advance(skip)?;
+        Ok(bytes)
     }
 }

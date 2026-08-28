@@ -51,6 +51,21 @@ macro_rules! define_owned_and_ref {
         $vis struct $ref$(<$lifetime>)? { $($field: $ref_ty),* }
     };
     (
+        $(#[$meta:meta => $ref_meta:meta])*
+        $vis:vis struct $owned:ident => $ref:ident $(<$lifetime:lifetime>)? {
+            $(
+                $field:ident : $ty:ty => $ref_ty:ty
+            ),* $(,)?
+        }
+    ) => {
+        #[cfg(feature = "alloc")]
+        $(#[$meta])*
+        $vis struct $owned { $($field: $ty),* }
+
+        $(#[$ref_meta])*
+        $vis struct $ref$(<$lifetime>)? { $($field: $ref_ty),* }
+    };
+    (
         $(#[$meta:meta])*
         $vis:vis struct $owned:ident => $ref:ident $(<$lifetime:lifetime>)? (
             $(
@@ -63,6 +78,21 @@ macro_rules! define_owned_and_ref {
         $vis struct $owned ( $($ty),* );
 
         $(#[$meta])*
+        $vis struct $ref$(<$lifetime>)? ( $($ref_ty),* );
+    };
+    (
+        $(#[$meta:meta => $ref_meta:meta])*
+        $vis:vis struct $owned:ident => $ref:ident $(<$lifetime:lifetime>)? (
+            $(
+                $ty:ty => $ref_ty:ty
+            ),* $(,)?
+        ) $(;)?
+    ) => {
+        #[cfg(feature = "alloc")]
+        $(#[$meta])*
+        $vis struct $owned ( $($ty),* );
+
+        $(#[$ref_meta])*
         $vis struct $ref$(<$lifetime>)? ( $($ref_ty),* );
     };
     (
@@ -80,14 +110,31 @@ macro_rules! define_owned_and_ref {
         $(#[$meta])*
         $vis enum $ref$(<$lifetime>)? { $($variant$(($ref_ty))?),* }
     };
+    (
+        $(#[$meta:meta => $ref_meta:meta])*
+        $vis:vis enum $owned:ident => $ref:ident $(<$lifetime:lifetime>)? {
+            $(
+                $variant:ident$(($ty:ty => $ref_ty:ty))?
+            ),* $(,)?
+        }
+    ) => {
+        #[cfg(feature = "alloc")]
+        $(#[$meta])*
+        $vis enum $owned { $($variant$(($ty))?),* }
+
+        $(#[$ref_meta])*
+        $vis enum $ref$(<$lifetime>)? { $($variant$(($ref_ty))?),* }
+    };
 }
 
 macro_rules! impl_both {
     (impl $a:ident => $b:ident $(<$lifetime:lifetime>)? { $($tt:tt)* }) => {
+        #[cfg(feature = "alloc")]
         impl $a { $($tt)* }
         impl $b $(<$lifetime>)? { $($tt)* }
     };
     (impl($trait:ty) $a:ident => $b:ident $(<$lifetime:lifetime>)? { $($tt:tt)* }) => {
+        #[cfg(feature = "alloc")]
         impl $trait for $a { $($tt)* }
         impl $trait for $b $(<$lifetime>)? { $($tt)* }
     };

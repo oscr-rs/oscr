@@ -3,18 +3,27 @@ use super::macros::define_owned_and_ref;
 use core::fmt::{self, Display};
 use core::str::Utf8Error;
 
+#[cfg(feature = "alloc")]
+use alloc::borrow::{Borrow, Cow, ToOwned};
+#[cfg(feature = "alloc")]
+use alloc::string::String;
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
+
 define_owned_and_ref! {
     #[repr(transparent)]
     #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ZString => ZStr(Vec<u8> => [u8]);
 }
 
+#[cfg(feature = "alloc")]
 impl Clone for ZString {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
+#[cfg(feature = "alloc")]
 impl Default for ZString {
     fn default() -> Self {
         Self(Vec::new())
@@ -71,6 +80,22 @@ impl fmt::Display for FromBytesUntilNulError {
 impl core::error::Error for FromBytesUntilNulError {}
 
 impl ZStr {
+    pub fn new<S: AsRef<[u8]> + ?Sized>(s: &S) -> &Self {
+        Self::from_bytes_lossy(s.as_ref())
+    }
+
+    pub const fn from_bytes_lossy(bytes: &[u8]) -> &Self {
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == 0u8 {
+                let slice = unsafe { core::slice::from_raw_parts(bytes.as_ptr(), i) };
+                return unsafe { Self::from_bytes_unchecked(slice) };
+            }
+            i += 1;
+        }
+        unsafe { Self::from_bytes_unchecked(&bytes) }
+    }
+
     /// Constructs a [`ZStr`] with non-zero bytes.
     pub const fn from_bytes(bytes: &[u8]) -> Result<&Self, NulError> {
         let mut i = 0;
@@ -117,13 +142,62 @@ impl ZStr {
     }
 }
 
+impl<'a> From<&'a str> for &'a ZStr {
+    fn from(s: &'a str) -> Self {
+        ZStr::new(s)
+    }
+}
+
+impl<'a> From<&'a [u8]> for &'a ZStr {
+    fn from(s: &'a [u8]) -> Self {
+        ZStr::new(s)
+    }
+}
+
+impl AsRef<ZStr> for ZStr {
+    fn as_ref(&self) -> &ZStr {
+        self
+    }
+}
+
+impl AsRef<ZStr> for str {
+    fn as_ref(&self) -> &ZStr {
+        ZStr::new(self)
+    }
+}
+
+impl AsRef<ZStr> for [u8] {
+    fn as_ref(&self) -> &ZStr {
+        ZStr::new(self)
+    }
+}
+
+impl<const N: usize> AsRef<ZStr> for [u8; N] {
+    fn as_ref(&self) -> &ZStr {
+        ZStr::new(self)
+    }
+}
+
 #[cfg(feature = "alloc")]
-use alloc::borrow::{Borrow, Cow, ToOwned};
-#[cfg(feature = "alloc")]
-use alloc::vec::Vec;
+impl AsRef<ZStr> for Vec<u8> {
+    fn as_ref(&self) -> &ZStr {
+        ZStr::new(self)
+    }
+}
 
 #[cfg(feature = "alloc")]
 impl ZString {
+    pub fn new<S: Into<Vec<u8>>>(s: S) -> Self {
+        Self::from_vec_lossy(s.into())
+    }
+
+    pub fn from_vec_lossy(mut v: Vec<u8>) -> Self {
+        if let Some(position) = v.iter().position(|b| b == &0u8) {
+            unsafe { v.set_len(position) }
+        }
+        Self(v)
+    }
+
     pub fn from_vec(v: Vec<u8>) -> Result<Self, NulError> {
         if let Some(position) = v.iter().position(|b| b == &0u8) {
             Err(NulError { position })
@@ -191,6 +265,34 @@ impl AsRef<ZStr> for ZString {
     }
 }
 
+#[cfg(feature = "alloc")]
+impl From<&str> for ZString {
+    fn from(s: &str) -> Self {
+        Self::new(s)
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl From<&mut str> for ZString {
+    fn from(s: &mut str) -> Self {
+        s.to_owned().into()
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl From<String> for ZString {
+    fn from(s: String) -> Self {
+        Self::new(s)
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl From<&String> for ZString {
+    fn from(s: &String) -> Self {
+        Self::new(s.as_str())
+    }
+}
+
 impl ZStr {
     #[inline]
     pub const fn len(&self) -> usize {
@@ -207,6 +309,13 @@ impl ZStr {
         &self.0
     }
 
+    #[inline]
+    pub fn strip_prefix(&self, prefix: u8) -> Option<&Self> {
+        let stripped = self.0.strip_prefix(&[prefix])?;
+        Some(unsafe { Self::from_bytes_unchecked(stripped) })
+    }
+
+    #[cfg(feature = "alloc")]
     pub fn to_zstring(&self) -> ZString {
         unsafe { ZString::from_vec_unchecked(self.0.to_vec()) }
     }

@@ -1,11 +1,19 @@
-use super::parser::{self, Parser};
+use super::parser;
+#[cfg(feature = "parse")]
+use super::parser::Parser;
 
+#[cfg(feature = "serialize")]
 use core::convert::Infallible;
 use core::fmt::{self, Debug, Display};
 
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
+
 #[derive(Debug, Clone)]
 pub enum Error {
-    MissingTagString,
+    Tag(u8),
+    TagString,
+    Packet(Option<u8>),
     Parser(parser::Error),
 }
 
@@ -18,7 +26,23 @@ impl From<parser::Error> for Error {
 impl Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingTagString => write!(f, "missing tag string"),
+            Self::Tag(byte) => {
+                if byte.is_ascii_graphic() {
+                    write!(f, "unsupported tag '{}'", *byte as char)
+                } else {
+                    write!(f, "unsupported tag '\\x{:02x}'", byte)
+                }
+            }
+            Self::TagString => write!(f, "missing tag string"),
+            Self::Packet(byte) => match byte {
+                Some(b) if b.is_ascii_graphic() => {
+                    write!(f, "invalid packet magic '{}'", *b as char)
+                }
+                Some(b) => {
+                    write!(f, "invalid packet magic '\\x{:02x}'", b)
+                }
+                None => write!(f, "missing packet magic"),
+            },
             Self::Parser(e) => write!(f, "parser error: {}", e),
         }
     }
@@ -26,10 +50,21 @@ impl Display for Error {
 
 impl core::error::Error for Error {}
 
+#[cfg(any(feature = "parse", feature = "serialize"))]
+pub(crate) fn padding(len: usize) -> &'static [u8] {
+    const ZEROS: [u8; 3] = [0, 0, 0];
+    let pad = (4 - (len % 4)) % 4;
+    if pad > 0 {
+        &ZEROS[..pad]
+    } else {
+        &[]
+    }
+}
+
 #[cfg(feature = "parse")]
 pub trait Parse<'a>: Sized {
     type Error;
-    fn parse(parser: &'a mut Parser) -> Result<Self, Self::Error>;
+    fn parse(parser: &mut Parser<'a>) -> Result<Self, Self::Error>;
 }
 
 #[cfg(feature = "serialize")]
@@ -76,12 +111,7 @@ pub trait Write: Sized {
     }
 
     fn write_padding(&mut self, len: usize) -> Result<(), Self::Error> {
-        let pad = (4 - (len % 4)) % 4;
-        if pad > 0 {
-            static ZEROS: [u8; 3] = [0, 0, 0];
-            self.write(&ZEROS[..pad])?;
-        }
-        Ok(())
+        self.write(padding(len))
     }
 }
 
@@ -133,7 +163,7 @@ impl Write for Vec<u8> {
     }
 }
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "serialize", feature = "alloc"))]
 pub fn to_bytes<T: Serialize>(data: T) -> Vec<u8> {
     let mut v = Vec::new();
     data.serialize(&mut v);

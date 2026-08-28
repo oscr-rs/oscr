@@ -1,8 +1,16 @@
 use super::macros::{define_owned_and_ref, define_tags, impl_both};
-use super::parser::Parser;
 use super::time::TimeTag;
-use super::wire::{self, Parse, Serialize, Write};
 use super::zstr::*;
+
+#[cfg(feature = "parse")]
+use super::parser::Parser;
+#[cfg(feature = "parse")]
+use super::wire::{self, Parse};
+#[cfg(feature = "serialize")]
+use super::wire::{Serialize, Write};
+
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
 
 use crate::Error;
 
@@ -48,7 +56,7 @@ impl TryFrom<u8> for Tag {
     type Error = Error;
 
     fn try_from(byte: u8) -> Result<Self, Self::Error> {
-        Self::from_byte(byte).ok_or(Error::UnsupportedTag(byte))
+        Self::from_byte(byte).ok_or(Error::Tag(byte))
     }
 }
 
@@ -86,6 +94,35 @@ define_owned_and_ref! {
 
 impl Copy for ArgRef<'_> {}
 
+#[cfg(feature = "alloc")]
+impl PartialEq<ArgRef<'_>> for Arg {
+    fn eq(&self, other: &ArgRef<'_>) -> bool {
+        match (self, other) {
+            // OSC 1.0 required types
+            (Self::Int32(l), ArgRef::Int32(r)) => l == r,
+            (Self::Float(l), ArgRef::Float(r)) => l == r,
+            (Self::String(l), ArgRef::String(r)) => l.as_zstr() == *r,
+            (Self::Blob(l), ArgRef::Blob(r)) => l == r,
+            // OSC 1.1 additional required types
+            (Self::True, ArgRef::True) => true,
+            (Self::False, ArgRef::False) => true,
+            (Self::Null, ArgRef::Null) => true,
+            (Self::Impulse, ArgRef::Impulse) => true,
+            (Self::TimeTag(l), ArgRef::TimeTag(r)) => l == r,
+            // OSC 1.0 additional types
+            (Self::Int64(l), ArgRef::Int64(r)) => l == r,
+            (Self::Double(l), ArgRef::Double(r)) => l == r,
+            (Self::AlternateString(l), ArgRef::AlternateString(r)) => l.as_zstr() == *r,
+            (Self::Char(l), ArgRef::Char(r)) => l == r,
+            (Self::Rgba(l), ArgRef::Rgba(r)) => l == r,
+            (Self::Midi(l), ArgRef::Midi(r)) => l == r,
+            (Self::ArrayStart, ArgRef::ArrayStart) => true,
+            (Self::ArrayEnd, ArgRef::ArrayEnd) => true,
+            _ => false,
+        }
+    }
+}
+
 impl_both! {
     impl Arg => ArgRef<'_> {
         pub fn tag(&self) -> Tag {
@@ -115,6 +152,34 @@ impl_both! {
     }
 }
 
+#[cfg(feature = "alloc")]
+impl ArgRef<'_> {
+    pub fn to_owned(&self) -> Arg {
+        match self {
+            // OSC 1.0 required types
+            Self::Int32(int) => Arg::Int32(*int),
+            Self::Float(float) => Arg::Float(*float),
+            Self::String(s) => Arg::String(s.to_zstring()),
+            Self::Blob(data) => Arg::Blob(data.to_vec()),
+            // OSC 1.1 additional required types
+            Self::True => Arg::True,
+            Self::False => Arg::False,
+            Self::Null => Arg::Null,
+            Self::Impulse => Arg::Impulse,
+            Self::TimeTag(t) => Arg::TimeTag(*t),
+            // OSC 1.0 additional types
+            Self::Int64(int) => Arg::Int64(*int),
+            Self::Double(double) => Arg::Double(*double),
+            Self::AlternateString(s) => Arg::AlternateString(s.to_zstring()),
+            Self::Char(c) => Arg::Char(*c),
+            Self::Rgba(rgba) => Arg::Rgba(*rgba),
+            Self::Midi(midi) => Arg::Midi(*midi),
+            Self::ArrayStart => Arg::ArrayStart,
+            Self::ArrayEnd => Arg::ArrayEnd,
+        }
+    }
+}
+
 #[cfg(feature = "parse")]
 impl<'a> ArgRef<'a> {
     pub fn parse_tag(parser: &mut Parser<'a>, tag: Tag) -> Result<Self, wire::Error> {
@@ -122,17 +187,11 @@ impl<'a> ArgRef<'a> {
             // OSC 1.0 required types
             Tag::Int32 => Ok(parser.take_be_i32().map(Self::Int32)?),
             Tag::Float => Ok(parser.take_be_f32().map(Self::Float)?),
-            Tag::String => Ok(parser.take_zstr().map(Self::String)?),
+            Tag::String => Ok(parser.take_zstr_padded().map(Self::String)?),
             Tag::Blob => {
                 let len = parser.take_be_i32()?;
-                let padded = match len % 4 {
-                    1 => len + 3,
-                    2 => len + 2,
-                    3 => len + 1,
-                    _ => len,
-                };
-                let data = parser.take(padded as usize)?;
-                Ok(Self::Blob(&data[..len as usize]))
+                let data = parser.take_padded(len as _)?;
+                Ok(Self::Blob(data))
             }
             // OSC 1.1 additional required types
             Tag::True => Ok(Self::True),
