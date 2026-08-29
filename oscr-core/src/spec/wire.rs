@@ -1,6 +1,8 @@
+use super::arg::TagError;
 use super::parser;
 #[cfg(feature = "parse")]
 use super::parser::Parser;
+use super::{address, pattern};
 
 #[cfg(feature = "serialize")]
 use core::convert::Infallible;
@@ -11,10 +13,31 @@ use alloc::vec::Vec;
 
 #[derive(Debug, Clone)]
 pub enum Error {
-    Tag(u8),
+    Address(address::Error),
+    Pattern(pattern::Error),
+    Tag(TagError),
     TagString,
     Packet(Option<u8>),
+    Char(u32),
     Parser(parser::Error),
+}
+
+impl From<address::Error> for Error {
+    fn from(err: address::Error) -> Self {
+        Self::Address(err)
+    }
+}
+
+impl From<pattern::Error> for Error {
+    fn from(err: pattern::Error) -> Self {
+        Self::Pattern(err)
+    }
+}
+
+impl From<TagError> for Error {
+    fn from(err: TagError) -> Self {
+        Self::Tag(err)
+    }
 }
 
 impl From<parser::Error> for Error {
@@ -26,24 +49,29 @@ impl From<parser::Error> for Error {
 impl Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Tag(byte) => {
-                if byte.is_ascii_graphic() {
-                    write!(f, "unsupported tag '{}'", *byte as char)
-                } else {
-                    write!(f, "unsupported tag '\\x{:02x}'", byte)
-                }
-            }
-            Self::TagString => write!(f, "missing tag string"),
+            Self::Address(e) => write!(f, "cannot parse address: {}", e),
+            Self::Pattern(e) => write!(f, "cannot parse pattern: {}", e),
+            Self::Tag(e) => write!(f, "cannot parse tag: {}", e),
+            Self::TagString => write!(f, "cannot find tag string"),
             Self::Packet(byte) => match byte {
                 Some(b) if b.is_ascii_graphic() => {
-                    write!(f, "invalid packet magic '{}'", *b as char)
+                    write!(
+                        f,
+                        "cannot parse packet: invalid packet magic '{}'",
+                        *b as char
+                    )
                 }
                 Some(b) => {
-                    write!(f, "invalid packet magic '\\x{:02x}'", b)
+                    write!(
+                        f,
+                        "cannot parse packet: invalid packet magic '\\x{:02x}'",
+                        b
+                    )
                 }
-                None => write!(f, "missing packet magic"),
+                None => write!(f, "cannot find packet magic"),
             },
-            Self::Parser(e) => write!(f, "parser error: {}", e),
+            Self::Char(c) => write!(f, "invalid char {:#08x}", c),
+            Self::Parser(e) => write!(f, "cannot parse: {}", e),
         }
     }
 }
@@ -51,7 +79,7 @@ impl Display for Error {
 impl core::error::Error for Error {}
 
 #[cfg(any(feature = "parse", feature = "serialize"))]
-pub(crate) fn padding(len: usize) -> &'static [u8] {
+pub(super) fn padding(len: usize) -> &'static [u8] {
     const ZEROS: [u8; 3] = [0, 0, 0];
     let pad = (4 - (len % 4)) % 4;
     if pad > 0 {

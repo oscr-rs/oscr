@@ -1,6 +1,6 @@
 use super::macros::define_owned_and_ref;
 
-use core::fmt::{self, Display};
+use core::fmt;
 use core::str::Utf8Error;
 
 #[cfg(feature = "alloc")]
@@ -10,10 +10,99 @@ use alloc::string::String;
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
+pub struct Display<'a> {
+    inner: &'a ZStr,
+}
+
+impl fmt::Debug for Display<'_> {
+    #[cfg(feature = "alloc")]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use alloc::string::String;
+        use core::fmt::Write;
+
+        let s = String::from_utf8_lossy(self.inner.as_bytes());
+        f.write_str("\"")?;
+        for c in s.chars() {
+            for escaped in c.escape_default() {
+                f.write_char(escaped)?;
+            }
+        }
+        f.write_str("\"")?;
+        Ok(())
+    }
+
+    #[cfg(not(feature = "alloc"))]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use core::fmt::Write;
+        f.write_str("\"")?;
+        let bytes = self.inner.as_bytes();
+        if let Ok(s) = str::from_utf8(bytes) {
+            for c in s.chars() {
+                for escaped in c.escape_default() {
+                    f.write_char(escaped)?;
+                }
+            }
+        } else {
+            let chunks = bytes.utf8_chunks();
+            for chunk in chunks {
+                for c in chunk.valid().chars() {
+                    for escaped in c.escape_default() {
+                        f.write_char(escaped)?;
+                    }
+                }
+                for byte in chunk.invalid() {
+                    write!(f, "\\x{:02X}", byte)?;
+                }
+            }
+        }
+        f.write_str("\"")?;
+        Ok(())
+    }
+}
+
+impl fmt::Display for Display<'_> {
+    #[cfg(feature = "alloc")]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use alloc::string::String;
+        f.write_str(&String::from_utf8_lossy(self.inner.as_bytes()))
+    }
+
+    #[cfg(not(feature = "alloc"))]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use core::fmt::Write;
+        let bytes = self.inner.as_bytes();
+        if let Ok(s) = str::from_utf8(bytes) {
+            f.write_str(s)
+        } else {
+            let chunks = bytes.utf8_chunks();
+            for chunk in chunks {
+                f.write_str(chunk.valid())?;
+                for _ in chunk.invalid() {
+                    f.write_char('\u{FFFD}')?;
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 define_owned_and_ref! {
     #[repr(transparent)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ZString => ZStr(Vec<u8> => [u8]);
+}
+
+#[cfg(feature = "alloc")]
+impl fmt::Debug for ZString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&Display { inner: self }, f)
+    }
+}
+
+impl fmt::Debug for ZStr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&Display { inner: self }, f)
+    }
 }
 
 #[cfg(feature = "alloc")]
@@ -41,7 +130,7 @@ impl NulError {
     }
 }
 
-impl Display for NulError {
+impl fmt::Display for NulError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "unexpected NUL byte found at {}", self.position)
     }
@@ -55,7 +144,7 @@ pub enum FromBytesWithNulError {
     NotNulTerminated,
 }
 
-impl Display for FromBytesWithNulError {
+impl fmt::Display for FromBytesWithNulError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InteriorNul { position } => {
@@ -139,6 +228,11 @@ impl ZStr {
             i += 1;
         }
         Err(FromBytesUntilNulError(()))
+    }
+
+    #[inline]
+    pub const fn display(&self) -> Display<'_> {
+        Display { inner: self }
     }
 }
 
@@ -245,6 +339,13 @@ impl ZString {
     pub fn push(&mut self, ch: u8) {
         self.0.push(ch);
     }
+
+    #[inline]
+    pub const fn display(&self) -> Display<'_> {
+        Display {
+            inner: self.as_zstr(),
+        }
+    }
 }
 
 #[cfg(feature = "alloc")]
@@ -310,8 +411,47 @@ impl ZStr {
     }
 
     #[inline]
-    pub fn strip_prefix(&self, prefix: u8) -> Option<&Self> {
-        let stripped = self.0.strip_prefix(&[prefix])?;
+    pub const fn split_at(&self, mid: usize) -> (&Self, &Self) {
+        let pair = self.0.split_at(mid);
+        unsafe {
+            (
+                Self::from_bytes_unchecked(pair.0),
+                Self::from_bytes_unchecked(pair.1),
+            )
+        }
+    }
+
+    #[inline]
+    pub const fn split_at_checked(&self, mid: usize) -> Option<(&Self, &Self)> {
+        if let Some(pair) = self.0.split_at_checked(mid) {
+            Some(unsafe {
+                (
+                    Self::from_bytes_unchecked(pair.0),
+                    Self::from_bytes_unchecked(pair.1),
+                )
+            })
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub fn split_first(&self) -> Option<(&u8, &Self)> {
+        match self.0.split_first() {
+            Some((head, tail)) => Some((head, unsafe { Self::from_bytes_unchecked(tail) })),
+            None => None,
+        }
+    }
+
+    #[inline]
+    pub fn strip_prefix(&self, prefix: &[u8]) -> Option<&Self> {
+        let stripped = self.0.strip_prefix(prefix)?;
+        Some(unsafe { Self::from_bytes_unchecked(stripped) })
+    }
+
+    #[inline]
+    pub fn strip_suffix(&self, suffix: &[u8]) -> Option<&Self> {
+        let stripped = self.0.strip_suffix(suffix)?;
         Some(unsafe { Self::from_bytes_unchecked(stripped) })
     }
 
@@ -328,6 +468,12 @@ impl ZStr {
     #[inline]
     pub const unsafe fn to_str_unchecked(&self) -> &str {
         str::from_utf8_unchecked(&self.0)
+    }
+
+    pub fn split(&self, byte: u8) -> impl Iterator<Item = &Self> {
+        self.0
+            .split(move |&b| b == byte)
+            .map(|s| unsafe { ZStr::from_bytes_unchecked(s) })
     }
 
     #[cfg(feature = "alloc")]

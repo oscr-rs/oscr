@@ -4,12 +4,16 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["std", "parse", "serialize", "compat"]
+default = ["std", "parse", "serialize", "compat", "lut"]
 std = ["alloc"]
 alloc = []
 parse = []
 serialize = []
 match = []
-compat = ["compat_immediate_zero", "compat_optional_tag_string"]
+compat = ["compat_immediate_zero", "compat_optional_tag_string", "compat_trailing_slash"]
 compat_immediate_zero = []
 compat_optional_tag_string = []
+compat_trailing_slash = []
+lut = ["lut_tag", "lut_address_check"]
+lut_tag = []
+lut_address_check = []

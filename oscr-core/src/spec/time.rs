@@ -46,8 +46,14 @@ const fn nanos_to_frac(nanos: u32) -> u32 {
 }
 
 #[repr(transparent)]
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TimeTag(u64);
+
+impl Default for TimeTag {
+    fn default() -> Self {
+        Self::IMMEDIATE
+    }
+}
 
 impl TimeTag {
     pub const IMMEDIATE: Self = Self(1);
@@ -137,5 +143,19 @@ impl From<SystemTime> for TimeTag {
 impl Serialize for TimeTag {
     fn serialize<W: Write>(&self, w: &mut W) -> Result<(), W::Error> {
         w.write_be_u64(self.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn immediate() {
+        assert!(TimeTag::immediate().is_immediate());
+        #[cfg(not(feature = "compat_immediate_zero"))]
+        assert!(!TimeTag::from_raw(0).is_immediate());
+        #[cfg(feature = "compat_immediate_zero")]
+        assert!(TimeTag::from_raw(0).is_immediate());
     }
 }

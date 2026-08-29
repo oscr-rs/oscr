@@ -1,13 +1,14 @@
-use super::address::{Address, Pattern};
+use super::address::Address;
 use super::arg::ArgRef;
 use super::arg::Tag;
 use super::macros::{define_owned_and_ref, impl_both};
+use super::pattern::Pattern;
 use super::time::TimeTag;
 
 #[cfg(feature = "alloc")]
-use super::address::PatternBuf;
-#[cfg(feature = "alloc")]
 use super::arg::Arg;
+#[cfg(feature = "alloc")]
+use super::pattern::PatternBuf;
 
 #[cfg(feature = "parse")]
 use super::parser::Parser;
@@ -159,14 +160,14 @@ impl<'a> Parse<'a> for MessageRef<'a> {
         let peeked = parser.peek().ok();
 
         if peeked == Some(b',') {
-            let tag_str = parser.take_zstr_padded()?.strip_prefix(b',').unwrap();
+            let tag_str = parser.take_zstr_padded()?.strip_prefix(b",").unwrap();
 
-            if let Some(&invalid) = tag_str
+            if let Some(e) = tag_str
                 .as_bytes()
                 .iter()
-                .find(|&&b| Tag::try_from(b).is_err())
+                .find_map(|&b| Tag::try_from(b).err())
             {
-                Err(wire::Error::Tag(invalid))
+                Err(e.into())
             } else {
                 let tags = unsafe {
                     from_raw_parts(tag_str.as_bytes().as_ptr() as *const Tag, tag_str.len())
@@ -423,40 +424,80 @@ impl Serialize for BundleRef<'_> {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "alloc")]
+    use alloc::vec::Vec;
+
+    #[cfg(feature = "parse")]
+    macro_rules! assert_iter_eq {
+        ($iter:expr, $expected:expr) => {{
+            let mut iter = $iter;
+            let expected = $expected;
+            for (idx, exp) in expected.iter().enumerate() {
+                assert_eq!(
+                    iter.next()
+                        .unwrap_or_else(|| panic!("iterator ended early at index {}", idx))
+                        .unwrap(),
+                    *exp,
+                    "mismatch at index {}",
+                    idx,
+                );
+            }
+            assert!(
+                iter.next().is_none(),
+                "iterator has remaining elements after expected end"
+            );
+        }};
+    }
+
     #[cfg(feature = "parse")]
     fn parse_bytes<'a, T: Parse<'a>>(bytes: &'a [u8]) -> Result<T, T::Error> {
         T::parse(&mut Parser::new(bytes))
     }
 
+    #[cfg(all(feature = "serialize", feature = "alloc"))]
+    fn to_bytes<'a, T: Serialize>(data: &T) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let _ = data.serialize(&mut buf);
+        buf
+    }
+
     // https://opensoundcontrol.stanford.edu/spec-1_0-examples.html
-    #[cfg(all(feature = "parse", feature = "alloc"))]
+    #[cfg(all(feature = "parse"))]
     #[test]
-    fn spec_1_0_examples() {
-        use crate::{ZStr, ZString};
+    fn parse_spec_1_0_examples() {
+        use crate::ZStr;
+        #[cfg(feature = "alloc")]
+        use crate::ZString;
 
         let oscillator =
             parse_bytes::<MessageRef>(b"/oscillator/4/frequency\x00,f\x00\x00\x43\xdc\x00\x00")
                 .unwrap();
         assert_eq!(oscillator.pattern(), "/oscillator/4/frequency");
-        assert_eq!(
-            oscillator.args().collect::<Result<Vec<_>, _>>().unwrap(),
-            [ArgRef::Float(440.0f32)],
-        );
-        let owned = oscillator.to_owned().unwrap();
-        assert_eq!(
-            owned,
-            Message {
-                pattern: Pattern::new("/oscillator/4/frequency").to_owned(),
-                args: vec![Arg::Float(440.0f32)]
-            }
-        );
+        let args = oscillator.args();
+        assert_eq!(args.is_tagged(), true);
+        assert_iter_eq!(args, [ArgRef::Float(440.0f32),]);
+
+        #[cfg(feature = "alloc")]
+        {
+            let owned = oscillator.to_owned().unwrap();
+            assert_eq!(
+                owned,
+                Message {
+                    pattern: Pattern::from_str_raw("/oscillator/4/frequency").to_owned(),
+                    args: [Arg::Float(440.0f32)].into(),
+                }
+            );
+        }
 
         let foo = parse_bytes::<MessageRef>(
             b"/foo\x00\x00\x00\x00,iisff\x00\x00\x00\x00\x03\xe8\xff\xff\xff\xff\x68\x65\x6c\x6c\x6f\x00\x00\x00\x3f\x9d\xf3\xb6\x40\xb5\xb2\x2d",
         ).unwrap();
         assert_eq!(foo.pattern(), "/foo");
-        assert_eq!(
-            foo.args().collect::<Result<Vec<_>, _>>().unwrap(),
+        let args = foo.args();
+        assert_eq!(args.is_tagged(), true);
+
+        assert_iter_eq!(
+            args,
             [
                 ArgRef::Int32(1000),
                 ArgRef::Int32(-1),
@@ -465,19 +506,80 @@ mod tests {
                 ArgRef::Float(5.678f32),
             ]
         );
-        let owned = foo.to_owned().unwrap();
+
+        #[cfg(feature = "alloc")]
+        {
+            let owned = foo.to_owned().unwrap();
+            assert_eq!(
+                owned,
+                Message {
+                    pattern: Pattern::from_str_raw("/foo").to_owned(),
+                    args: [
+                        Arg::Int32(1000),
+                        Arg::Int32(-1),
+                        Arg::String(ZString::from("hello")),
+                        Arg::Float(1.234f32),
+                        Arg::Float(5.678f32),
+                    ]
+                    .into(),
+                }
+            );
+        }
+    }
+
+    // https://opensoundcontrol.stanford.edu/spec-1_0-examples.html
+    #[cfg(all(feature = "serialize", feature = "alloc"))]
+    #[test]
+    fn serialize_spec_1_0_examples() {
+        use crate::ZString;
+
+        let oscillator = Message {
+            pattern: Pattern::from_str_raw("/oscillator/4/frequency").to_owned(),
+            args: [Arg::Float(440.0f32)].into(),
+        };
         assert_eq!(
-            owned,
-            Message {
-                pattern: Pattern::new("/foo").to_owned(),
-                args: vec![
-                    Arg::Int32(1000),
-                    Arg::Int32(-1),
-                    Arg::String(ZString::from("hello")),
-                    Arg::Float(1.234f32),
-                    Arg::Float(5.678f32),
-                ]
-            }
+            to_bytes(&oscillator),
+            b"/oscillator/4/frequency\x00,f\x00\x00\x43\xdc\x00\x00",
+        );
+
+        let foo = Message {
+            pattern: Pattern::from_str_raw("/foo").to_owned(),
+            args: [
+                Arg::Int32(1000),
+                Arg::Int32(-1),
+                Arg::String(ZString::from("hello")),
+                Arg::Float(1.234f32),
+                Arg::Float(5.678f32),
+            ]
+            .into(),
+        };
+        assert_eq!(
+            to_bytes(&foo),
+            b"/foo\x00\x00\x00\x00,iisff\x00\x00\x00\x00\x03\xe8\xff\xff\xff\xff\x68\x65\x6c\x6c\x6f\x00\x00\x00\x3f\x9d\xf3\xb6\x40\xb5\xb2\x2d",
+        );
+    }
+
+    #[cfg(all(feature = "parse", feature = "compat_optional_tag_string"))]
+    #[test]
+    fn parse_compat_optional_tag_string() {
+        use crate::ZStr;
+
+        const DATA: &[u8] = b"/compat\x00\x00\x00\x23\x33foo\x00fuiyoh\x00\x00\x00\x00\x23\x33";
+        let message = parse_bytes::<MessageRef>(DATA).unwrap();
+        let args = message.args();
+        assert_eq!(message.pattern(), "/compat");
+        assert_eq!(args.is_tagged(), false);
+        let tags = [Tag::Int32, Tag::String, Tag::AlternateString, Tag::Int32];
+        let args = args.to_coerced(&tags);
+        assert_eq!(args.is_tagged(), true);
+        assert_iter_eq!(
+            args,
+            [
+                ArgRef::Int32(0x2333),
+                ArgRef::String(ZStr::new("foo")),
+                ArgRef::AlternateString(ZStr::new("fuiyoh")),
+                ArgRef::Int32(0x2333),
+            ]
         );
     }
 }

@@ -5,14 +5,27 @@ use super::zstr::*;
 #[cfg(feature = "parse")]
 use super::parser::Parser;
 #[cfg(feature = "parse")]
-use super::wire::{self, Parse};
+use super::wire;
 #[cfg(feature = "serialize")]
 use super::wire::{Serialize, Write};
+
+use core::fmt::{self, Display};
 
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
-use crate::Error;
+#[derive(Debug, Clone)]
+pub struct TagError(u8);
+
+impl Display for TagError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.is_ascii_graphic() {
+            write!(f, "unsupported tag '{}'", self.0 as char)
+        } else {
+            write!(f, "unsupported tag '\\x{:02x}'", self.0)
+        }
+    }
+}
 
 define_tags! {
     #[repr(u8)]
@@ -53,10 +66,10 @@ impl Tag {
 }
 
 impl TryFrom<u8> for Tag {
-    type Error = Error;
+    type Error = TagError;
 
     fn try_from(byte: u8) -> Result<Self, Self::Error> {
-        Self::from_byte(byte).ok_or(Error::Tag(byte))
+        Self::from_byte(byte).ok_or(TagError(byte))
     }
 }
 
@@ -205,11 +218,11 @@ impl<'a> ArgRef<'a> {
             // OSC 1.0 additional types
             Tag::Int64 => Ok(parser.take_be_i64().map(Self::Int64)?),
             Tag::Double => Ok(parser.take_be_f64().map(Self::Double)?),
-            Tag::AlternateString => Ok(Self::AlternateString(ZStr::from_bytes(&[1]).unwrap())),
+            Tag::AlternateString => Ok(parser.take_zstr_padded().map(Self::AlternateString)?),
             Tag::Char => {
-                let c = parser.take_be_u32().map(char::from_u32)?;
-                // FIXME: validate chars
-                Ok(Self::Char(c.unwrap()))
+                let c = parser.take_be_u32()?;
+                let c = char::from_u32(c).ok_or(wire::Error::Char(c))?;
+                Ok(Self::Char(c))
             }
             Tag::Rgba => Ok(parser.take_array::<4>().map(Self::Rgba)?),
             Tag::Midi => Ok(parser.take_array::<4>().map(Self::Midi)?),
@@ -233,9 +246,9 @@ impl_both! {
                     w.write_padding(s.len() + 1)
                 },
                 Self::Blob(data) => {
+                    w.write_be_i32(data.len() as _)?;
                     w.write(&data)?;
-                    w.write_u8(0)?;
-                    w.write_padding(data.len() + 1)
+                    w.write_padding(data.len())
                 },
                 // OSC 1.1 additional required types
                 Self::True | Self::False | Self::Null | Self::Impulse => Ok(()),

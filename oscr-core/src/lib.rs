@@ -7,7 +7,7 @@ mod error;
 mod spec;
 
 pub use error::Error;
-pub use spec::address::*;
+pub use spec::address::Address;
 pub use spec::arg::*;
 pub use spec::packet::*;
 pub use spec::time::*;

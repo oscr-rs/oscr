@@ -11,6 +11,7 @@ macro_rules! define_tags {
             $($variant = $byte),*
         }
 
+        #[cfg(feature = "lut_tag")]
         impl $name {
             pub(crate) const LOOKUP: [Option<Self>; 256] = {
                 let mut table = [None; 256];
@@ -20,6 +21,16 @@ macro_rules! define_tags {
 
             pub fn from_byte(byte: u8) -> Option<Self> {
                 Self::LOOKUP[byte as usize]
+            }
+        }
+
+        #[cfg(not(feature = "lut_tag"))]
+        impl $name {
+            pub fn from_byte(byte: u8) -> Option<Self> {
+                match byte {
+                    $($byte => Some(Self::$variant),)*
+                    _ => None,
+                }
             }
         }
     };
@@ -143,3 +154,112 @@ macro_rules! impl_both {
 pub(super) use define_owned_and_ref;
 pub(super) use define_tags;
 pub(super) use impl_both;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn define_tags_simple() {
+        define_tags! {
+            #[repr(u8)]
+            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+            pub enum SimpleTag {
+                Foo = b'1',
+                Bar = b'2',
+            }
+        }
+
+        assert_eq!(SimpleTag::from_byte(b'1'), Some(SimpleTag::Foo));
+        assert_eq!(SimpleTag::from_byte(b'2'), Some(SimpleTag::Bar));
+        assert_eq!(SimpleTag::from_byte(b'3'), None);
+    }
+
+    #[test]
+    fn define_owned_and_ref_simple() {
+        #[cfg(feature = "alloc")]
+        use alloc::string::String;
+
+        define_owned_and_ref! {
+            #[derive(Debug)]
+            struct Simple => SimpleRef<'a>(String => &'a str);
+        }
+
+        #[cfg(feature = "alloc")]
+        assert_eq!(Simple("a".into()).0, "a");
+
+        assert_eq!(SimpleRef("a").0, "a");
+    }
+
+    #[test]
+    fn define_owned_and_ref_meta() {
+        #[cfg(feature = "alloc")]
+        use alloc::string::String;
+
+        define_owned_and_ref! {
+            #[derive(Debug, Clone, PartialEq, Eq) => derive(Debug, Clone, Copy, PartialEq, Eq)]
+            struct Simple => SimpleRef<'a>(String => &'a str);
+        }
+
+        #[cfg(feature = "alloc")]
+        impl PartialEq<SimpleRef<'_>> for Simple {
+            fn eq(&self, other: &SimpleRef<'_>) -> bool {
+                self.0 == other.0
+            }
+        }
+
+        let simple_ref = SimpleRef("a");
+        let copied = simple_ref;
+        // we can still access `simple_ref` so it was copied rather than moved.
+        assert_eq!(simple_ref.0, "a");
+        assert_eq!(copied.0, "a");
+
+        #[cfg(feature = "alloc")]
+        assert_eq!(Simple("a".into()), simple_ref);
+    }
+
+    #[test]
+    fn impl_both_simple() {
+        #[cfg(feature = "alloc")]
+        use alloc::string::String;
+
+        define_owned_and_ref! {
+            struct Simple => SimpleRef<'a>(String => &'a str);
+        }
+
+        impl_both!(
+            impl Simple => SimpleRef<'_> {
+                fn to_view(&self) -> &[u8] {
+                    self.0.as_bytes()
+                }
+            }
+        );
+
+        #[cfg(feature = "alloc")]
+        assert_eq!(Simple("abc".into()).to_view(), b"abc");
+
+        assert_eq!(SimpleRef("abc").to_view(), b"abc");
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn impl_both_trait() {
+        #[cfg(feature = "alloc")]
+        use alloc::string::String;
+
+        trait ToBytes {
+            fn to_bytes(&self) -> &[u8];
+        }
+
+        impl_both!(
+            impl(ToBytes) String => str {
+                fn to_bytes(&self) -> &[u8] {
+                    self.as_bytes()
+                }
+            }
+        );
+
+        #[cfg(feature = "alloc")]
+        assert_eq!(String::to_bytes(&String::from("abc")), b"abc");
+
+        assert_eq!(str::to_bytes("abc"), b"abc");
+    }
+}
