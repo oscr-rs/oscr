@@ -10,6 +10,8 @@ pub use error::Error;
 pub use spec::address::Address;
 pub use spec::arg::*;
 pub use spec::packet::*;
+#[cfg(feature = "pattern")]
+pub use spec::pattern::*;
 pub use spec::time::*;
 pub use spec::wire;
 pub use spec::zstr::*;

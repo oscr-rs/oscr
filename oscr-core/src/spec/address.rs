@@ -86,12 +86,15 @@ impl fmt::Display for InvalidByte {
     }
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum Error {
     Magic(MagicError),
     Invalid(InvalidByte),
     Slashes(usize),
     Trailing,
+    #[cfg(feature = "pattern")]
+    Validation(super::pattern::ValidatorError),
 }
 
 impl From<MagicError> for Error {
@@ -106,6 +109,13 @@ impl From<InvalidByte> for Error {
     }
 }
 
+#[cfg(feature = "pattern")]
+impl From<super::pattern::ValidatorError> for Error {
+    fn from(err: super::pattern::ValidatorError) -> Self {
+        Self::Validation(err)
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -113,6 +123,8 @@ impl fmt::Display for Error {
             Self::Invalid(e) => e.fmt(f),
             Self::Slashes(n) => write!(f, "too many slashes ({})", n),
             Self::Trailing => write!(f, "trailing slash"),
+            #[cfg(feature = "pattern")]
+            Self::Validation(e) => e.fmt(f),
         }
     }
 }
@@ -136,7 +148,7 @@ pub(super) const SEGMENT_DISALLOWED: &[u8] = b" #*,/?[]{}";
 pub(super) const SEGMENT_DISALLOWED_MAP: [bool; 256] = charset_map(SEGMENT_DISALLOWED);
 
 #[inline]
-pub(super) const fn is_disallowed(byte: u8) -> bool {
+pub(super) const fn is_byte_disallowed(byte: u8) -> bool {
     #[cfg(feature = "lut_address_check")]
     {
         DISALLOWED_MAP[byte as usize]
@@ -151,7 +163,7 @@ pub(super) const fn is_disallowed(byte: u8) -> bool {
 }
 
 #[inline]
-pub(super) const fn is_disallowed_segment(byte: u8) -> bool {
+pub(super) const fn is_byte_disallowed_segment(byte: u8) -> bool {
     #[cfg(feature = "lut_address_check")]
     {
         SEGMENT_DISALLOWED_MAP[byte as usize]
@@ -215,7 +227,7 @@ pub(super) const fn check_charset(bytes: &[u8]) -> Result<(), Error> {
             return Err(Error::Slashes(slashes));
         }
 
-        if is_disallowed(byte) {
+        if is_byte_disallowed(byte) {
             return Err(Error::Invalid(InvalidByte { position: i, byte }));
         }
 
@@ -231,7 +243,7 @@ pub(super) const fn check_segment(bytes: &[u8]) -> Result<(), InvalidByte> {
 
     while i < len {
         let byte = bytes[i];
-        if is_disallowed_segment(byte) {
+        if is_byte_disallowed_segment(byte) {
             return Err(InvalidByte { position: i, byte });
         }
         i += 1;
@@ -380,6 +392,32 @@ impl AsRef<[u8]> for Address {
     }
 }
 
+#[cfg(feature = "alloc")]
+impl PartialEq<str> for AddressBuf {
+    fn eq(&self, other: &str) -> bool {
+        self.0.as_bytes() == other.as_bytes()
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl PartialEq<&str> for AddressBuf {
+    fn eq(&self, other: &&str) -> bool {
+        self.0.as_bytes() == other.as_bytes()
+    }
+}
+
+impl PartialEq<str> for Address {
+    fn eq(&self, other: &str) -> bool {
+        self.0.as_bytes() == other.as_bytes()
+    }
+}
+
+impl PartialEq<&str> for Address {
+    fn eq(&self, other: &&str) -> bool {
+        self.0.as_bytes() == other.as_bytes()
+    }
+}
+
 impl Address {
     pub fn new<S: AsRef<ZStr> + ?Sized>(s: &S) -> Result<&Self, Error> {
         Self::from_zstr(s.as_ref())
@@ -397,13 +435,13 @@ impl Address {
 
     #[inline]
     pub const fn from_bytes(bytes: &[u8]) -> Result<&Self, Error> {
-        let zstr = ZStr::from_bytes_lossy(bytes);
+        let zstr = ZStr::from_bytes(bytes);
         Self::from_zstr(zstr)
     }
 
     #[inline]
     pub const fn from_bytes_raw(bytes: &[u8]) -> &Self {
-        let zstr = ZStr::from_bytes_lossy(bytes);
+        let zstr = ZStr::from_bytes(bytes);
         Self::from_zstr_raw(zstr)
     }
 
@@ -427,6 +465,12 @@ impl Address {
         }
     }
 
+    #[inline]
+    #[cfg(feature = "alloc")]
+    pub fn to_zstring(&self) -> ZString {
+        self.0.to_zstring()
+    }
+
     #[cfg(feature = "alloc")]
     pub fn to_address_buf(&self) -> AddressBuf {
         self.to_owned()
@@ -438,7 +482,14 @@ impl FromStr for AddressBuf {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        AddressBuf::try_from(ZStr::from_bytes_lossy(s.as_bytes()))
+        AddressBuf::try_from(ZStr::from_bytes(s.as_bytes()))
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl From<&'_ Address> for AddressBuf {
+    fn from(address: &'_ Address) -> Self {
+        address.to_address_buf()
     }
 }
 
@@ -459,6 +510,13 @@ impl TryFrom<ZString> for AddressBuf {
     fn try_from(zstring: ZString) -> Result<Self, Self::Error> {
         check(zstring.as_bytes())?;
         Ok(Self(zstring))
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl From<&'_ Address> for ZString {
+    fn from(address: &'_ Address) -> ZString {
+        address.0.to_zstring()
     }
 }
 
@@ -492,6 +550,8 @@ mod tests {
         assert!(Address::new("/a/b/c").is_ok());
         #[cfg(feature = "compat_trailing_slash")]
         assert!(Address::new("/a/b/c/").is_ok());
+        #[cfg(feature = "compat_trailing_slash")]
+        assert!(Address::new("/a/b/c/").unwrap() == "/a/b/c/");
         #[cfg(not(feature = "compat_trailing_slash"))]
         assert!(Address::new("/a/b/c/").is_err());
 

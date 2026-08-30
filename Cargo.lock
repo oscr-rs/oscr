@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "oscr"
 version = "0.1.0"
+dependencies = [
+ "oscr-core",
+]
 
 [[package]]
 name = "oscr-core"

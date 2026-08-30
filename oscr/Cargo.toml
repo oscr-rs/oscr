@@ -2,5 +2,18 @@
 name = "oscr"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
+description = "Minimal-dependency, `no_std` friendly Open Sound Control (OSC) library"
+repository = "https://jump.codeberg.page/oscr"
+
+[features]
+default = ["std", "parse", "serialize", "lut"]
+std = ["oscr-core/std"]
+alloc = ["oscr-core/alloc"]
+parse = ["oscr-core/parse"]
+serialize = ["oscr-core/serialize"]
+compat = ["oscr-core/compat"]
+lut = ["oscr-core/lut"]
 
 [dependencies]
+oscr-core = { version = "0.1.0", path = "../oscr-core", default-features = false }

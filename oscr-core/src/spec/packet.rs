@@ -1,14 +1,16 @@
-use super::address::Address;
+use super::address::{self, Address};
 use super::arg::ArgRef;
 use super::arg::Tag;
 use super::macros::{define_owned_and_ref, impl_both};
+#[cfg(feature = "pattern")]
 use super::pattern::Pattern;
 use super::time::TimeTag;
+use super::zstr::ZStr;
 
 #[cfg(feature = "alloc")]
 use super::arg::Arg;
 #[cfg(feature = "alloc")]
-use super::pattern::PatternBuf;
+use super::zstr::ZString;
 
 #[cfg(feature = "parse")]
 use super::parser::Parser;
@@ -75,7 +77,7 @@ impl<'a> Iterator for ArgsIter<'a> {
 define_owned_and_ref! {
     #[derive(Debug, Default, Clone, PartialEq) => derive(Debug, Clone)]
     pub struct Message => MessageRef<'a> {
-        pattern: PatternBuf => &'a Pattern,
+        pattern: ZString => &'a ZStr,
         args: Vec<Arg> => ArgsIter<'a>,
     }
 }
@@ -102,8 +104,9 @@ impl MessageBuilder {
         self
     }
 
+    #[cfg(feature = "pattern")]
     pub fn pattern(&mut self, pattern: impl AsRef<Pattern>) -> &mut Self {
-        self.0.pattern = pattern.as_ref().to_owned();
+        self.0.pattern = pattern.as_ref().into();
         self
     }
 
@@ -119,7 +122,16 @@ impl MessageBuilder {
 
 #[cfg(feature = "alloc")]
 impl Message {
-    pub fn pattern(&self) -> &Pattern {
+    #[cfg(feature = "pattern")]
+    pub fn pattern(&self) -> Result<&Pattern, address::Error> {
+        Pattern::new(&self.pattern)
+    }
+
+    pub fn address(&self) -> Result<&Address, address::Error> {
+        Address::new(&self.pattern)
+    }
+
+    pub fn pattern_raw(&self) -> &ZStr {
         &self.pattern
     }
 
@@ -129,8 +141,17 @@ impl Message {
 }
 
 impl MessageRef<'_> {
-    pub fn pattern(&self) -> &Pattern {
-        self.pattern
+    #[cfg(feature = "pattern")]
+    pub fn pattern(&self) -> Result<&Pattern, address::Error> {
+        Pattern::new(&self.pattern)
+    }
+
+    pub fn address(&self) -> Result<&Address, address::Error> {
+        Address::new(&self.pattern)
+    }
+
+    pub fn pattern_raw(&self) -> &ZStr {
+        &self.pattern
     }
 
     pub fn args(&self) -> ArgsIter<'_> {
@@ -156,7 +177,7 @@ impl<'a> Parse<'a> for MessageRef<'a> {
 
     fn parse(parser: &mut Parser<'a>) -> Result<Self, Self::Error> {
         use core::slice::from_raw_parts;
-        let pattern = <&Pattern>::parse(parser)?;
+        let pattern = parser.take_zstr_padded()?;
         let peeked = parser.peek().ok();
 
         if peeked == Some(b',') {
@@ -202,7 +223,7 @@ impl<'a> Parse<'a> for MessageRef<'a> {
 #[cfg(all(feature = "serialize", feature = "alloc"))]
 impl Serialize for Message {
     fn serialize<W: Write>(&self, w: &mut W) -> Result<(), W::Error> {
-        self.pattern.serialize(w)?;
+        w.write_zstr_padded(&self.pattern)?;
         w.write_u8(b',')?;
         for arg in self.args.iter() {
             w.write_u8(arg.tag().as_byte())?;
@@ -219,7 +240,7 @@ impl Serialize for Message {
 #[cfg(feature = "serialize")]
 impl Serialize for MessageRef<'_> {
     fn serialize<W: Write>(&self, w: &mut W) -> Result<(), W::Error> {
-        self.pattern.serialize(w)?;
+        w.write_zstr_padded(self.pattern)?;
         if let Some(tags) = self.args.tags() {
             w.write_u8(b',')?;
             for tag in tags {
@@ -472,7 +493,7 @@ mod tests {
         let oscillator =
             parse_bytes::<MessageRef>(b"/oscillator/4/frequency\x00,f\x00\x00\x43\xdc\x00\x00")
                 .unwrap();
-        assert_eq!(oscillator.pattern(), "/oscillator/4/frequency");
+        assert_eq!(oscillator.address().unwrap(), "/oscillator/4/frequency");
         let args = oscillator.args();
         assert_eq!(args.is_tagged(), true);
         assert_iter_eq!(args, [ArgRef::Float(440.0f32),]);
@@ -483,7 +504,7 @@ mod tests {
             assert_eq!(
                 owned,
                 Message {
-                    pattern: Pattern::from_str_raw("/oscillator/4/frequency").to_owned(),
+                    pattern: Address::from_str_raw("/oscillator/4/frequency").into(),
                     args: [Arg::Float(440.0f32)].into(),
                 }
             );
@@ -492,7 +513,7 @@ mod tests {
         let foo = parse_bytes::<MessageRef>(
             b"/foo\x00\x00\x00\x00,iisff\x00\x00\x00\x00\x03\xe8\xff\xff\xff\xff\x68\x65\x6c\x6c\x6f\x00\x00\x00\x3f\x9d\xf3\xb6\x40\xb5\xb2\x2d",
         ).unwrap();
-        assert_eq!(foo.pattern(), "/foo");
+        assert_eq!(foo.address().unwrap(), "/foo");
         let args = foo.args();
         assert_eq!(args.is_tagged(), true);
 
@@ -513,7 +534,7 @@ mod tests {
             assert_eq!(
                 owned,
                 Message {
-                    pattern: Pattern::from_str_raw("/foo").to_owned(),
+                    pattern: Address::from_str_raw("/foo").into(),
                     args: [
                         Arg::Int32(1000),
                         Arg::Int32(-1),
@@ -534,7 +555,7 @@ mod tests {
         use crate::ZString;
 
         let oscillator = Message {
-            pattern: Pattern::from_str_raw("/oscillator/4/frequency").to_owned(),
+            pattern: Address::from_str_raw("/oscillator/4/frequency").into(),
             args: [Arg::Float(440.0f32)].into(),
         };
         assert_eq!(
@@ -543,7 +564,7 @@ mod tests {
         );
 
         let foo = Message {
-            pattern: Pattern::from_str_raw("/foo").to_owned(),
+            pattern: Address::from_str_raw("/foo").into(),
             args: [
                 Arg::Int32(1000),
                 Arg::Int32(-1),
@@ -567,7 +588,7 @@ mod tests {
         const DATA: &[u8] = b"/compat\x00\x00\x00\x23\x33foo\x00fuiyoh\x00\x00\x00\x00\x23\x33";
         let message = parse_bytes::<MessageRef>(DATA).unwrap();
         let args = message.args();
-        assert_eq!(message.pattern(), "/compat");
+        assert_eq!(message.address().unwrap(), "/compat");
         assert_eq!(args.is_tagged(), false);
         let tags = [Tag::Int32, Tag::String, Tag::AlternateString, Tag::Int32];
         let args = args.to_coerced(&tags);

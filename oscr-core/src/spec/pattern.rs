@@ -1,9 +1,10 @@
+use super::address::Error;
 use super::macros::define_owned_and_ref;
 use super::zstr::*;
 
 #[cfg(feature = "alloc")]
 use super::address::AddressBuf;
-use super::address::{self, Address, InvalidByte, MagicError};
+use super::address::{self, Address, InvalidByte};
 
 #[cfg(feature = "parse")]
 use super::parser::Parser;
@@ -19,6 +20,8 @@ use core::fmt::{self, Debug};
 
 #[cfg(feature = "alloc")]
 use alloc::borrow::{Borrow, ToOwned};
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
 #[cfg(feature = "alloc")]
 use core::ops::Deref;
 
@@ -152,29 +155,6 @@ impl AsRef<[u8]> for Pattern {
 }
 
 #[derive(Debug, Clone)]
-pub enum Error {
-    Magic(MagicError),
-    Invalid(InvalidByte),
-    Slashes(usize),
-    Trailing,
-    Validation(ValidatorError),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Magic(e) => write!(f, "{}", e),
-            Self::Invalid(e) => write!(f, "{}", e),
-            Self::Slashes(n) => write!(f, "too many slashes ({})", n),
-            Self::Trailing => write!(f, "trailing slash"),
-            Self::Validation(e) => write!(f, "{}", e),
-        }
-    }
-}
-
-impl core::error::Error for Error {}
-
-#[derive(Debug, Clone)]
 pub struct ValidatorError {
     position: usize,
     state: ValidatorState,
@@ -248,7 +228,7 @@ impl Validator {
             (Charset, b'!') => Charset,
             (Charset | CharsetChar | CharsetRange | CharsetRangeSus, b']') => Detached,
             (Charset | CharsetChar | CharsetRange | CharsetRangeSus, byte)
-                if address::is_disallowed(byte) =>
+                if address::is_byte_disallowed(byte) =>
             {
                 return Err(self.to_error(Some(byte)));
             }
@@ -269,7 +249,7 @@ impl Validator {
             }
             (Choice, b'}') => Detached,
             (Choice, b',') => Choice,
-            (Choice, byte) if address::is_disallowed_segment(byte) => {
+            (Choice, byte) if address::is_byte_disallowed_segment(byte) => {
                 return Err(self.to_error(Some(byte)));
             }
             (Choice, _) => Choice,
@@ -315,13 +295,13 @@ impl Validator {
 }
 
 #[inline]
-const fn is_disallowed(byte: u8) -> bool {
+const fn is_byte_disallowed(byte: u8) -> bool {
     matches!(byte, b' ' | b'#')
 }
 
 #[inline]
-const fn is_special(byte: u8) -> bool {
-    address::is_disallowed(byte)
+const fn is_byte_special(byte: u8) -> bool {
+    address::is_byte_disallowed(byte)
 }
 
 pub(super) const fn check_pos(bytes: &[u8]) -> Result<Option<usize>, Error> {
@@ -343,11 +323,11 @@ pub(super) const fn check_pos(bytes: &[u8]) -> Result<Option<usize>, Error> {
             return Err(Error::Slashes(slashes));
         }
 
-        if is_disallowed(byte) {
+        if is_byte_disallowed(byte) {
             return Err(Error::Invalid(InvalidByte { position: i, byte }));
         }
 
-        if is_special(byte) {
+        if is_byte_special(byte) {
             if pos.is_none() {
                 pos = Some(i);
             }
@@ -394,13 +374,13 @@ impl Pattern {
 
     #[inline]
     pub const fn from_bytes(bytes: &[u8]) -> Result<&Self, Error> {
-        let zstr = ZStr::from_bytes_lossy(bytes);
+        let zstr = ZStr::from_bytes(bytes);
         Self::from_zstr(zstr)
     }
 
     #[inline]
     pub const fn from_bytes_raw(bytes: &[u8]) -> &Self {
-        let zstr = ZStr::from_bytes_lossy(bytes);
+        let zstr = ZStr::from_bytes(bytes);
         Self::from_zstr_raw(zstr)
     }
 
@@ -422,18 +402,93 @@ impl Pattern {
         self.0.as_bytes()
     }
 
-    // pub fn segments(&self) -> impl Iterator<Item = SegmentRef<'_>> {
-    //     self.0.split(SEPARATOR)
-    //         .map(|segment| {
-    //         })
-    // }
+    pub fn segment_refs(&self) -> SegmentRefIter<'_> {
+        SegmentRefIter {
+            bytes: self.as_bytes(),
+        }
+    }
+
+    #[cfg(feature = "alloc")]
+    pub fn segments(&self) -> Vec<Segment> {
+        self.segment_refs()
+            .map(|segment| segment.to_owned())
+            .collect()
+    }
 
     #[cfg(feature = "alloc")]
     pub fn compile(&self) -> Compiled {
         todo!()
     }
 
-    // pub fn compile_segment_refs<const N: usize>(&self) -> SegmentRefs<'_, N> {}
+    #[inline]
+    #[cfg(feature = "alloc")]
+    pub fn to_zstring(&self) -> ZString {
+        self.0.to_zstring()
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl From<&'_ Pattern> for ZString {
+    fn from(pattern: &'_ Pattern) -> ZString {
+        pattern.0.to_zstring()
+    }
+}
+
+pub struct SegmentRefIter<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> SegmentRefIter<'a> {
+    fn current(&self) -> Option<u8> {
+        self.bytes.first().copied()
+    }
+
+    fn take_until_slash_or_eof(&mut self) -> &'a [u8] {
+        let pos = self
+            .bytes
+            .iter()
+            .position(|&b| b == b'/')
+            .unwrap_or(self.bytes.len());
+        let taken = &self.bytes[..pos];
+        self.bytes = &self.bytes[pos..];
+        taken
+    }
+
+    fn take_slashes(&mut self) -> usize {
+        let non_slash = self
+            .bytes
+            .iter()
+            .position(|&b| b != b'/')
+            .unwrap_or(self.bytes.len());
+        self.bytes = &self.bytes[non_slash..];
+        non_slash
+    }
+}
+
+impl<'a> Iterator for SegmentRefIter<'a> {
+    type Item = SegmentRef<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let current = self.current()?;
+
+        if current == b'/' {
+            let slashes = self.take_slashes();
+            match slashes {
+                1 => {
+                    let segment = self.take_until_slash_or_eof();
+                    SegmentRef::parse(unsafe { ZStr::from_bytes_unchecked(segment) })
+                }
+                2 => Some(SegmentRef::AnySegments),
+                _ => {
+                    self.bytes = &[];
+                    None
+                }
+            }
+        } else {
+            let segment = self.take_until_slash_or_eof();
+            SegmentRef::parse(unsafe { ZStr::from_bytes_unchecked(segment) })
+        }
+    }
 }
 
 #[cfg(feature = "parse")]
@@ -458,20 +513,33 @@ impl_both! {
 
 #[cfg(feature = "alloc")]
 #[derive(Debug, Clone)]
-struct Compiled {
-    segments: Vec<Segment>,
+pub struct Compiled {
+    segments: Vec<CompiledSegment>,
+}
+
+impl Compiled {
+    pub fn segments(&self) -> &[CompiledSegment] {
+        &self.segments
+    }
 }
 
 #[derive(Debug, Clone)]
+pub struct CompiledSegment;
+
+pub type CharSetLookup = [bool; 256];
+#[allow(dead_code)]
+pub type CharSetLookupCompact = [u8; 32];
+
+#[derive(Debug, Clone)]
 pub struct SegmentRefs<'a, const N: usize> {
-    data: [Option<SegmentRef<'a>>; N],
-    len: usize,
+    _data: [Option<SegmentRef<'a>>; N],
+    _len: usize,
 }
 
 define_owned_and_ref! {
     #[
         derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash) =>
-        derive(Debug, Clone)
+        derive(Debug, Clone, PartialEq, Eq)
     ]
     pub enum Segment => SegmentRef<'a> {
         Exact(ZString => &'a ZStr),
@@ -481,11 +549,84 @@ define_owned_and_ref! {
         HasPrefix(ZString => &'a ZStr),
         HasSuffix(ZString => &'a ZStr),
         HasAffix((ZString, ZString) => (&'a ZStr, &'a ZStr)),
-        Complex(ZString => &'a ZStr),
+        Pat(ZString => &'a ZStr),
     }
 }
 
-#[derive(Debug, Clone)]
+impl SegmentRef<'_> {
+    #[cfg(feature = "alloc")]
+    fn to_owned(&self) -> Segment {
+        match self {
+            Self::Exact(exact) => Segment::Exact(exact.to_zstring()),
+            Self::Any => Segment::Any,
+            Self::AnySegments => Segment::AnySegments,
+            Self::AnyOf(choices) => {
+                Segment::AnyOf(choices.clone().map(|c| c.to_zstring()).collect())
+            }
+            Self::HasPrefix(prefix) => Segment::HasPrefix(prefix.to_zstring()),
+            Self::HasSuffix(suffix) => Segment::HasSuffix(suffix.to_zstring()),
+            Self::HasAffix((prefix, suffix)) => {
+                Segment::HasAffix((prefix.to_zstring(), suffix.to_zstring()))
+            }
+            Self::Pat(pat) => Segment::Pat(pat.to_zstring()),
+        }
+    }
+}
+
+impl<'a> SegmentRef<'a> {
+    const fn find_special_once(zstr: &'a ZStr) -> Result<Option<(u8, usize)>, ()> {
+        let bytes = zstr.as_bytes();
+        let len = bytes.len();
+        let mut i = 0;
+        let mut found = None;
+        while i < len {
+            if is_byte_special(bytes[i]) {
+                if let Some(_twice) = found.replace((bytes[i], i)) {
+                    return Err(());
+                }
+            }
+            i += 1;
+        }
+        Ok(found)
+    }
+
+    pub fn parse(zstr: &'a ZStr) -> Option<Self> {
+        let (first, rest) = zstr.split_first()?;
+        match *first {
+            b'{' => {
+                let choices = rest.strip_suffix(b"}")?;
+                return Some(Self::AnyOf(AnyOfIter { data: choices }));
+            }
+            b'*' if rest.is_empty() => {
+                return Some(Self::Any);
+            }
+            _ => {}
+        }
+
+        match Self::find_special_once(zstr) {
+            Ok(Some((b'*', pos))) => {
+                if pos == 0 {
+                    // pattern "*suffix"
+                    let (_, after) = zstr.split_at(pos + 1);
+                    return Some(Self::HasSuffix(after));
+                } else if pos == zstr.len() - 1 {
+                    // pattern "prefix*"
+                    let (before, _) = zstr.split_at(pos);
+                    return Some(Self::HasPrefix(before));
+                } else {
+                    // pattern "prefix*suffix"
+                    let (before, star_and_after) = zstr.split_at(pos);
+                    let (_star, after) = star_and_after.split_at(1);
+                    return Some(Self::HasAffix((before, after)));
+                }
+            }
+            Ok(None) => return Some(Self::Exact(zstr)),
+            Ok(Some(_)) | Err(_) => return Some(Self::Pat(zstr)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnyOfIter<'a> {
     data: &'a ZStr,
 }
@@ -500,7 +641,7 @@ impl<'a> Iterator for AnyOfIter<'a> {
             Some(next)
         } else if !self.data.is_empty() {
             let data = self.data;
-            self.data = ZStr::from_bytes_lossy(&[]);
+            self.data = ZStr::from_bytes(&[]);
             Some(data)
         } else {
             None
@@ -517,9 +658,9 @@ mod tests {
         assert!(Pattern::new("/").is_ok());
         assert!(Pattern::new("/a").is_ok());
         #[cfg(feature = "compat_trailing_slash")]
-        assert!(Address::new("/a/b/c/").is_ok());
+        assert!(Pattern::new("/a/b/c/").is_ok());
         #[cfg(not(feature = "compat_trailing_slash"))]
-        assert!(Address::new("/a/b/c/").is_err());
+        assert!(Pattern::new("/a/b/c/").is_err());
 
         assert!(Pattern::new("//a").is_ok());
         assert!(Pattern::new("//a/b").is_ok());
@@ -597,5 +738,63 @@ mod tests {
         assert!(Pattern::new("/foo/bar[!#]").is_err());
         assert!(Pattern::new("/foo/bar[!*]").is_err());
         assert!(Pattern::new("/foo/bar[!?]").is_err());
+    }
+
+    macro_rules! assert_segments_iter {
+        ($iter:expr, $expected:expr) => {{
+            let mut iter = $iter;
+            let expected = $expected;
+            for (idx, exp) in expected.iter().enumerate() {
+                assert_eq!(
+                    iter.next()
+                        .unwrap_or_else(|| panic!("iterator ended early at index {}", idx)),
+                    *exp,
+                    "mismatch at index {}",
+                    idx,
+                );
+            }
+            assert!(
+                iter.next().is_none(),
+                "iterator has remaining elements after expected end"
+            );
+        }};
+    }
+
+    #[test]
+    fn pattern_segments() {
+        let pattern = Pattern::new("/{foo,bar}").unwrap();
+        assert_segments_iter!(
+            pattern.segment_refs(),
+            [SegmentRef::AnyOf(AnyOfIter {
+                data: "foo,bar".into()
+            })]
+        );
+        let pattern = Pattern::new("//a/b").unwrap();
+        assert_segments_iter!(
+            pattern.segment_refs(),
+            [
+                SegmentRef::AnySegments,
+                SegmentRef::Exact("a".into()),
+                SegmentRef::Exact("b".into())
+            ]
+        );
+        let pattern = Pattern::new("/abc*/*def/foo*bar").unwrap();
+        assert_segments_iter!(
+            pattern.segment_refs(),
+            [
+                SegmentRef::HasPrefix("abc".into()),
+                SegmentRef::HasSuffix("def".into()),
+                SegmentRef::HasAffix(("foo".into(), "bar".into()))
+            ]
+        );
+        let pattern = Pattern::new("/abc*/*def/foo*bar").unwrap();
+        assert_segments_iter!(
+            pattern.segment_refs(),
+            [
+                SegmentRef::HasPrefix("abc".into()),
+                SegmentRef::HasSuffix("def".into()),
+                SegmentRef::HasAffix(("foo".into(), "bar".into()))
+            ]
+        );
     }
 }

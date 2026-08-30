@@ -1,8 +1,9 @@
+use super::address;
 use super::arg::TagError;
 use super::parser;
 #[cfg(feature = "parse")]
 use super::parser::Parser;
-use super::{address, pattern};
+use super::zstr::ZStr;
 
 #[cfg(feature = "serialize")]
 use core::convert::Infallible;
@@ -14,7 +15,6 @@ use alloc::vec::Vec;
 #[derive(Debug, Clone)]
 pub enum Error {
     Address(address::Error),
-    Pattern(pattern::Error),
     Tag(TagError),
     TagString,
     Packet(Option<u8>),
@@ -25,12 +25,6 @@ pub enum Error {
 impl From<address::Error> for Error {
     fn from(err: address::Error) -> Self {
         Self::Address(err)
-    }
-}
-
-impl From<pattern::Error> for Error {
-    fn from(err: pattern::Error) -> Self {
-        Self::Pattern(err)
     }
 }
 
@@ -50,7 +44,6 @@ impl Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Address(e) => write!(f, "cannot parse address: {}", e),
-            Self::Pattern(e) => write!(f, "cannot parse pattern: {}", e),
             Self::Tag(e) => write!(f, "cannot parse tag: {}", e),
             Self::TagString => write!(f, "cannot find tag string"),
             Self::Packet(byte) => match byte {
@@ -141,6 +134,17 @@ pub trait Write: Sized {
     fn write_padding(&mut self, len: usize) -> Result<(), Self::Error> {
         self.write(padding(len))
     }
+
+    fn write_zstr_padded(&mut self, zstr: &ZStr) -> Result<(), Self::Error> {
+        self.write(zstr.as_bytes())?;
+        self.write_u8(0u8)?;
+        self.write(padding(zstr.len() + 1))
+    }
+
+    fn write_padded(&mut self, bytes: &[u8]) -> Result<(), Self::Error> {
+        self.write(bytes)?;
+        self.write(padding(bytes.len()))
+    }
 }
 
 #[cfg(feature = "serialize")]
@@ -189,6 +193,21 @@ impl Write for Vec<u8> {
         self.extend_from_slice(bytes);
         Ok(())
     }
+}
+
+#[cfg(all(feature = "parse"))]
+use super::packet::{MessageRef, PacketRef};
+
+#[cfg(all(feature = "parse"))]
+pub fn parse_packet(bytes: &[u8]) -> Result<PacketRef<'_>, Error> {
+    let mut parser = Parser::new(bytes);
+    PacketRef::parse(&mut parser)
+}
+
+#[cfg(all(feature = "parse"))]
+pub fn parse_message(bytes: &[u8]) -> Result<MessageRef<'_>, Error> {
+    let mut parser = Parser::new(bytes);
+    MessageRef::parse(&mut parser)
 }
 
 #[cfg(all(feature = "serialize", feature = "alloc"))]

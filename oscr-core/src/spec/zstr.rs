@@ -1,6 +1,7 @@
 use super::macros::define_owned_and_ref;
 
 use core::fmt;
+use core::slice::{from_raw_parts, from_raw_parts_mut};
 use core::str::Utf8Error;
 
 #[cfg(feature = "alloc")]
@@ -170,64 +171,71 @@ impl core::error::Error for FromBytesUntilNulError {}
 
 impl ZStr {
     pub fn new<S: AsRef<[u8]> + ?Sized>(s: &S) -> &Self {
-        Self::from_bytes_lossy(s.as_ref())
+        Self::from_bytes(s.as_ref())
     }
 
-    pub const fn from_bytes_lossy(bytes: &[u8]) -> &Self {
+    const fn find_nul(bytes: &[u8]) -> Option<usize> {
         let mut i = 0;
         while i < bytes.len() {
             if bytes[i] == 0u8 {
-                let slice = unsafe { core::slice::from_raw_parts(bytes.as_ptr(), i) };
-                return unsafe { Self::from_bytes_unchecked(slice) };
+                return Some(i);
             }
             i += 1;
         }
-        unsafe { Self::from_bytes_unchecked(&bytes) }
+        None
     }
 
-    /// Constructs a [`ZStr`] with non-zero bytes.
-    pub const fn from_bytes(bytes: &[u8]) -> Result<&Self, NulError> {
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] == 0u8 {
-                return Err(NulError { position: i });
-            }
-            i += 1;
+    pub const fn from_bytes(bytes: &[u8]) -> &Self {
+        if let Some(nul) = Self::find_nul(bytes) {
+            unsafe { Self::from_bytes_unchecked(from_raw_parts(bytes.as_ptr(), nul)) }
+        } else {
+            unsafe { Self::from_bytes_unchecked(&bytes) }
         }
-        Ok(unsafe { Self::from_bytes_unchecked(bytes) })
+    }
+
+    pub const fn from_bytes_mut(bytes: &mut [u8]) -> &mut Self {
+        if let Some(nul) = Self::find_nul(bytes) {
+            unsafe { Self::from_bytes_unchecked_mut(from_raw_parts_mut(bytes.as_mut_ptr(), nul)) }
+        } else {
+            unsafe { Self::from_bytes_unchecked_mut(bytes) }
+        }
+    }
+
+    pub const fn from_bytes_checked(bytes: &[u8]) -> Result<&Self, NulError> {
+        if let Some(nul) = Self::find_nul(bytes) {
+            Err(NulError { position: nul })
+        } else {
+            Ok(unsafe { Self::from_bytes_unchecked(bytes) })
+        }
     }
 
     pub const unsafe fn from_bytes_unchecked(bytes: &[u8]) -> &Self {
         unsafe { &*(bytes as *const [u8] as *const Self) }
     }
 
+    pub const unsafe fn from_bytes_unchecked_mut(bytes: &mut [u8]) -> &mut Self {
+        unsafe { &mut *(bytes as *mut [u8] as *mut Self) }
+    }
+
     /// Similar to [`core::ffi::CStr::from_bytes_with_nul`].
     pub const fn from_bytes_with_nul(bytes: &[u8]) -> Result<&Self, FromBytesWithNulError> {
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] == 0u8 {
-                if i + 1 == bytes.len() {
-                    let slice = unsafe { core::slice::from_raw_parts(bytes.as_ptr(), i) };
-                    return Ok(unsafe { Self::from_bytes_unchecked(slice) });
-                } else {
-                    return Err(FromBytesWithNulError::InteriorNul { position: i });
-                }
+        if let Some(nul) = Self::find_nul(bytes) {
+            if nul + 1 == bytes.len() {
+                Ok(unsafe { Self::from_bytes_unchecked(from_raw_parts(bytes.as_ptr(), nul)) })
+            } else {
+                Err(FromBytesWithNulError::InteriorNul { position: nul })
             }
-            i += 1;
+        } else {
+            Err(FromBytesWithNulError::NotNulTerminated)
         }
-        Err(FromBytesWithNulError::NotNulTerminated)
     }
 
     pub const fn from_bytes_until_nul(bytes: &[u8]) -> Result<&Self, FromBytesUntilNulError> {
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] == 0u8 {
-                let slice = unsafe { core::slice::from_raw_parts(bytes.as_ptr(), i) };
-                return Ok(unsafe { Self::from_bytes_unchecked(slice) });
-            }
-            i += 1;
+        if let Some(nul) = Self::find_nul(bytes) {
+            Ok(unsafe { Self::from_bytes_unchecked(from_raw_parts(bytes.as_ptr(), nul)) })
+        } else {
+            Err(FromBytesUntilNulError(()))
         }
-        Err(FromBytesUntilNulError(()))
     }
 
     #[inline]
@@ -245,6 +253,45 @@ impl<'a> From<&'a str> for &'a ZStr {
 impl<'a> From<&'a [u8]> for &'a ZStr {
     fn from(s: &'a [u8]) -> Self {
         ZStr::new(s)
+    }
+}
+
+impl PartialEq<str> for ZStr {
+    fn eq(&self, other: &str) -> bool {
+        self.as_bytes() == other.as_bytes()
+    }
+}
+
+impl PartialEq<&str> for ZStr {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_bytes() == other.as_bytes()
+    }
+}
+
+impl PartialEq<&mut str> for ZStr {
+    fn eq(&self, other: &&mut str) -> bool {
+        self.as_bytes() == other.as_bytes()
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl PartialEq<String> for ZStr {
+    fn eq(&self, other: &String) -> bool {
+        self.as_bytes() == other.as_bytes()
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl PartialEq<&String> for ZStr {
+    fn eq(&self, other: &&String) -> bool {
+        self.as_bytes() == other.as_bytes()
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl PartialEq<&mut String> for ZStr {
+    fn eq(&self, other: &&mut String) -> bool {
+        self.as_bytes() == other.as_bytes()
     }
 }
 
@@ -282,17 +329,17 @@ impl AsRef<ZStr> for Vec<u8> {
 #[cfg(feature = "alloc")]
 impl ZString {
     pub fn new<S: Into<Vec<u8>>>(s: S) -> Self {
-        Self::from_vec_lossy(s.into())
+        Self::from_vec(s.into())
     }
 
-    pub fn from_vec_lossy(mut v: Vec<u8>) -> Self {
+    pub fn from_vec(mut v: Vec<u8>) -> Self {
         if let Some(position) = v.iter().position(|b| b == &0u8) {
             unsafe { v.set_len(position) }
         }
         Self(v)
     }
 
-    pub fn from_vec(v: Vec<u8>) -> Result<Self, NulError> {
+    pub fn from_vec_checked(v: Vec<u8>) -> Result<Self, NulError> {
         if let Some(position) = v.iter().position(|b| b == &0u8) {
             Err(NulError { position })
         } else {
@@ -355,6 +402,14 @@ impl core::ops::Deref for ZString {
     #[inline]
     fn deref(&self) -> &Self::Target {
         unsafe { ZStr::from_bytes_unchecked(&self.0) }
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl core::ops::DerefMut for ZString {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { ZStr::from_bytes_unchecked_mut(&mut self.0) }
     }
 }
 
@@ -436,9 +491,80 @@ impl ZStr {
     }
 
     #[inline]
-    pub fn split_first(&self) -> Option<(&u8, &Self)> {
+    pub const unsafe fn split_at_unchecked(&self, mid: usize) -> (&Self, &Self) {
+        let pair = self.0.split_at_unchecked(mid);
+        unsafe {
+            (
+                Self::from_bytes_unchecked(pair.0),
+                Self::from_bytes_unchecked(pair.1),
+            )
+        }
+    }
+
+    #[inline]
+    pub const fn split_at_mut(&mut self, mid: usize) -> (&mut Self, &mut Self) {
+        let pair = self.0.split_at_mut(mid);
+        unsafe {
+            (
+                Self::from_bytes_unchecked_mut(pair.0),
+                Self::from_bytes_unchecked_mut(pair.1),
+            )
+        }
+    }
+
+    #[inline]
+    pub const fn split_at_mut_checked(&mut self, mid: usize) -> Option<(&mut Self, &mut Self)> {
+        if let Some(pair) = self.0.split_at_mut_checked(mid) {
+            Some(unsafe {
+                (
+                    Self::from_bytes_unchecked_mut(pair.0),
+                    Self::from_bytes_unchecked_mut(pair.1),
+                )
+            })
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub const unsafe fn split_at_mut_unchecked(&mut self, mid: usize) -> (&mut Self, &mut Self) {
+        let pair = self.0.split_at_mut_unchecked(mid);
+        unsafe {
+            (
+                Self::from_bytes_unchecked_mut(pair.0),
+                Self::from_bytes_unchecked_mut(pair.1),
+            )
+        }
+    }
+
+    #[inline]
+    pub const fn split_first(&self) -> Option<(&u8, &Self)> {
         match self.0.split_first() {
             Some((head, tail)) => Some((head, unsafe { Self::from_bytes_unchecked(tail) })),
+            None => None,
+        }
+    }
+
+    #[inline]
+    pub const fn split_first_mut(&mut self) -> Option<(&mut u8, &mut Self)> {
+        match self.0.split_first_mut() {
+            Some((head, tail)) => Some((head, unsafe { Self::from_bytes_unchecked_mut(tail) })),
+            None => None,
+        }
+    }
+
+    #[inline]
+    pub const fn split_last(&mut self) -> Option<(&u8, &Self)> {
+        match self.0.split_last() {
+            Some((last, init)) => Some((last, unsafe { Self::from_bytes_unchecked(init) })),
+            None => None,
+        }
+    }
+
+    #[inline]
+    pub const fn split_last_mut(&mut self) -> Option<(&mut u8, &mut Self)> {
+        match self.0.split_last_mut() {
+            Some((last, init)) => Some((last, unsafe { Self::from_bytes_unchecked_mut(init) })),
             None => None,
         }
     }
@@ -453,6 +579,21 @@ impl ZStr {
     pub fn strip_suffix(&self, suffix: &[u8]) -> Option<&Self> {
         let stripped = self.0.strip_suffix(suffix)?;
         Some(unsafe { Self::from_bytes_unchecked(stripped) })
+    }
+
+    #[inline]
+    pub fn starts_with(&self, needle: &[u8]) -> bool {
+        self.0.starts_with(needle)
+    }
+
+    #[inline]
+    pub fn ends_with(&self, needle: &[u8]) -> bool {
+        self.0.ends_with(needle)
+    }
+
+    #[inline]
+    pub fn contains(&self, x: &u8) -> bool {
+        self.0.contains(x)
     }
 
     #[cfg(feature = "alloc")]
@@ -479,6 +620,10 @@ impl ZStr {
     #[cfg(feature = "alloc")]
     pub fn to_string_lossy(&self) -> Cow<'_, str> {
         String::from_utf8_lossy(self.as_bytes())
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &u8> {
+        self.as_bytes().iter()
     }
 }
 
