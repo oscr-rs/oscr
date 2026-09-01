@@ -1,5 +1,3 @@
-use super::zstr::ZStr;
-
 use core::fmt::{self, Display};
 
 #[derive(Debug, Clone)]
@@ -146,7 +144,7 @@ impl<'a> Parser<'a> {
         Ok(f64::from_be_bytes(self.take_array::<8>()?))
     }
 
-    pub fn take_zstr_padded(&mut self) -> Result<&'a ZStr, Error> {
+    pub fn take_zstr_padded(&mut self) -> Result<&'a super::zstr::ZStr, Error> {
         use super::wire::padding;
         let zpos = self.view.iter().position(|&b| b == 0).ok_or(Error::ZStr {
             position: self.position(),
@@ -155,7 +153,7 @@ impl<'a> Parser<'a> {
         let len = zpos + 1;
         let skip = len + padding(len).len();
         self.advance(skip)?;
-        Ok(unsafe { ZStr::from_bytes_unchecked(bytes) })
+        Ok(unsafe { super::zstr::ZStr::from_bytes_unchecked(bytes) })
     }
 
     pub fn take_padded(&mut self, len: usize) -> Result<&'a [u8], Error> {

@@ -1,5 +1,4 @@
 use super::address::{self, Address};
-use super::arg::ArgRef;
 use super::arg::Tag;
 use super::macros::{define_owned_and_ref, impl_both};
 #[cfg(feature = "pattern")]
@@ -13,6 +12,8 @@ use super::arg::Arg;
 use super::zstr::ZString;
 
 #[cfg(feature = "parse")]
+use super::arg::ArgRef;
+#[cfg(feature = "parse")]
 use super::parser::Parser;
 #[cfg(feature = "parse")]
 use super::wire::{self, Parse};
@@ -20,7 +21,7 @@ use super::wire::{self, Parse};
 #[cfg(feature = "serialize")]
 use super::wire::{Serialize, Write};
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", feature = "parse"))]
 use alloc::borrow::ToOwned;
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
@@ -480,6 +481,56 @@ mod tests {
         let mut buf = Vec::new();
         let _ = data.serialize(&mut buf);
         buf
+    }
+
+    #[test]
+    fn message_address() {
+        let message = MessageRef {
+            pattern: ZStr::new("/abc"),
+            args: ArgsIter {
+                tags: None,
+                data: &[],
+            },
+        };
+        assert_eq!(message.address().ok(), Some(Address::from_str_raw("/abc")));
+        #[cfg(feature = "pattern")]
+        assert_eq!(message.pattern().ok(), Some(Pattern::from_str_raw("/abc")));
+
+        #[cfg(feature = "alloc")]
+        {
+            let owned = Message {
+                pattern: ZString::from("/abc"),
+                args: Vec::new(),
+            };
+            assert_eq!(owned.address().ok(), Some(Address::from_str_raw("/abc")));
+            #[cfg(feature = "pattern")]
+            assert_eq!(owned.pattern().ok(), Some(Pattern::from_str_raw("/abc")));
+        }
+
+        let message = MessageRef {
+            pattern: ZStr::new("this is invalid"),
+            args: ArgsIter {
+                tags: None,
+                data: &[],
+            },
+        };
+        assert!(message.address().is_err());
+        #[cfg(feature = "pattern")]
+        assert!(message.pattern().is_err());
+    }
+
+    #[test]
+    fn message_pattern() {
+        let message = MessageRef {
+            pattern: ZStr::new("/a[0-9]"),
+            args: ArgsIter {
+                tags: None,
+                data: &[],
+            },
+        };
+        assert!(message.address().is_err());
+        #[cfg(feature = "pattern")]
+        assert!(message.pattern().is_ok());
     }
 
     // https://opensoundcontrol.stanford.edu/spec-1_0-examples.html

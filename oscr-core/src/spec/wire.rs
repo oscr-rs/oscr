@@ -1,31 +1,22 @@
-use super::address;
 use super::arg::TagError;
 use super::parser;
 #[cfg(feature = "parse")]
 use super::parser::Parser;
-use super::zstr::ZStr;
 
 #[cfg(feature = "serialize")]
 use core::convert::Infallible;
 use core::fmt::{self, Debug, Display};
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "serialize", feature = "alloc"))]
 use alloc::vec::Vec;
 
 #[derive(Debug, Clone)]
 pub enum Error {
-    Address(address::Error),
     Tag(TagError),
     TagString,
     Packet(Option<u8>),
     Char(u32),
     Parser(parser::Error),
-}
-
-impl From<address::Error> for Error {
-    fn from(err: address::Error) -> Self {
-        Self::Address(err)
-    }
 }
 
 impl From<TagError> for Error {
@@ -43,7 +34,6 @@ impl From<parser::Error> for Error {
 impl Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Address(e) => write!(f, "cannot parse address: {}", e),
             Self::Tag(e) => write!(f, "cannot parse tag: {}", e),
             Self::TagString => write!(f, "cannot find tag string"),
             Self::Packet(byte) => match byte {
@@ -101,6 +91,7 @@ pub trait Serialize {
 #[cfg(feature = "serialize")]
 pub trait Write: Sized {
     type Error;
+
     fn write(&mut self, bytes: &[u8]) -> Result<(), Self::Error>;
 
     fn write_u8(&mut self, value: u8) -> Result<(), Self::Error> {
@@ -135,7 +126,7 @@ pub trait Write: Sized {
         self.write(padding(len))
     }
 
-    fn write_zstr_padded(&mut self, zstr: &ZStr) -> Result<(), Self::Error> {
+    fn write_zstr_padded(&mut self, zstr: &super::zstr::ZStr) -> Result<(), Self::Error> {
         self.write(zstr.as_bytes())?;
         self.write_u8(0u8)?;
         self.write(padding(zstr.len() + 1))

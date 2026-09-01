@@ -2,18 +2,12 @@ use super::macros::define_owned_and_ref;
 use super::zstr;
 use super::zstr::*;
 
-#[cfg(feature = "parse")]
-use super::parser::Parser;
-#[cfg(feature = "parse")]
-use super::wire::{self, Parse};
-
 #[cfg(feature = "serialize")]
 use super::macros::impl_both;
 #[cfg(feature = "serialize")]
 use super::wire::{Serialize, Write};
 
 use core::fmt;
-use core::str::FromStr;
 
 #[cfg(feature = "alloc")]
 use alloc::borrow::{Borrow, ToOwned};
@@ -131,6 +125,7 @@ impl fmt::Display for Error {
 
 impl core::error::Error for Error {}
 
+#[cfg(feature = "lut_address_check")]
 const fn charset_map(charset: &[u8]) -> [bool; 256] {
     let mut table = [false; 256];
     let mut i = 0;
@@ -141,16 +136,12 @@ const fn charset_map(charset: &[u8]) -> [bool; 256] {
     table
 }
 
-pub(super) const SEPARATOR: u8 = b'/';
-pub(super) const DISALLOWED: &[u8] = b" #*,?[]{}";
-pub(super) const DISALLOWED_MAP: [bool; 256] = charset_map(DISALLOWED);
-pub(super) const SEGMENT_DISALLOWED: &[u8] = b" #*,/?[]{}";
-pub(super) const SEGMENT_DISALLOWED_MAP: [bool; 256] = charset_map(SEGMENT_DISALLOWED);
-
 #[inline]
-pub(super) const fn is_byte_disallowed(byte: u8) -> bool {
+pub const fn is_byte_disallowed(byte: u8) -> bool {
     #[cfg(feature = "lut_address_check")]
     {
+        const DISALLOWED: &[u8] = b" #*,?[]{}";
+        const DISALLOWED_MAP: [bool; 256] = charset_map(DISALLOWED);
         DISALLOWED_MAP[byte as usize]
     }
     #[cfg(not(feature = "lut_address_check"))]
@@ -163,9 +154,11 @@ pub(super) const fn is_byte_disallowed(byte: u8) -> bool {
 }
 
 #[inline]
-pub(super) const fn is_byte_disallowed_segment(byte: u8) -> bool {
+pub const fn is_byte_disallowed_segment(byte: u8) -> bool {
     #[cfg(feature = "lut_address_check")]
     {
+        const SEGMENT_DISALLOWED: &[u8] = b" #*,/?[]{}";
+        const SEGMENT_DISALLOWED_MAP: [bool; 256] = charset_map(SEGMENT_DISALLOWED);
         SEGMENT_DISALLOWED_MAP[byte as usize]
     }
     #[cfg(not(feature = "lut_address_check"))]
@@ -179,13 +172,13 @@ pub(super) const fn is_byte_disallowed_segment(byte: u8) -> bool {
 
 pub(super) const fn check_magic(bytes: &[u8]) -> Result<&[u8], MagicError> {
     if let Some(&first) = bytes.first() {
-        if first != SEPARATOR {
+        if first != Address::SEP {
             Err(MagicError(Some(first)))
         } else {
             if let Some((&last, trim)) = bytes.split_last() {
-                if last == SEPARATOR {
+                if last == Address::SEP {
                     match trim.last() {
-                        Some(&b) if b != SEPARATOR => {
+                        Some(&b) if b != Address::SEP => {
                             #[cfg(feature = "compat_trailing_slash")]
                             {
                                 Ok(trim)
@@ -209,7 +202,7 @@ pub(super) const fn check_magic(bytes: &[u8]) -> Result<&[u8], MagicError> {
     }
 }
 
-pub(super) const fn check_charset(bytes: &[u8]) -> Result<(), Error> {
+const fn check_charset(bytes: &[u8]) -> Result<(), Error> {
     let len = bytes.len();
     let mut i = 0;
     let mut slashes = 0;
@@ -231,21 +224,6 @@ pub(super) const fn check_charset(bytes: &[u8]) -> Result<(), Error> {
             return Err(Error::Invalid(InvalidByte { position: i, byte }));
         }
 
-        i += 1;
-    }
-
-    Ok(())
-}
-
-pub(super) const fn check_segment(bytes: &[u8]) -> Result<(), InvalidByte> {
-    let len = bytes.len();
-    let mut i = 0;
-
-    while i < len {
-        let byte = bytes[i];
-        if is_byte_disallowed_segment(byte) {
-            return Err(InvalidByte { position: i, byte });
-        }
         i += 1;
     }
 
@@ -329,6 +307,21 @@ impl AddressBuf {
     }
 
     pub fn push_segment(&mut self, segment: impl AsRef<ZStr>) -> Result<(), Error> {
+        const fn check_segment(bytes: &[u8]) -> Result<(), InvalidByte> {
+            let len = bytes.len();
+            let mut i = 0;
+
+            while i < len {
+                let byte = bytes[i];
+                if is_byte_disallowed_segment(byte) {
+                    return Err(InvalidByte { position: i, byte });
+                }
+                i += 1;
+            }
+
+            Ok(())
+        }
+
         let segment = segment.as_ref();
         check_segment(segment.as_bytes())?;
         self.0.push_zstr(segment);
@@ -336,7 +329,7 @@ impl AddressBuf {
     }
 
     pub fn push_segment_raw(&mut self, segment: impl AsRef<ZStr>) {
-        self.0.push(SEPARATOR);
+        self.0.push(Address::SEP);
         self.0.push_zstr(segment.as_ref());
     }
 
@@ -419,6 +412,8 @@ impl PartialEq<&str> for Address {
 }
 
 impl Address {
+    pub(super) const SEP: u8 = b'/';
+
     pub fn new<S: AsRef<ZStr> + ?Sized>(s: &S) -> Result<&Self, Error> {
         Self::from_zstr(s.as_ref())
     }
@@ -478,7 +473,7 @@ impl Address {
 }
 
 #[cfg(feature = "alloc")]
-impl FromStr for AddressBuf {
+impl core::str::FromStr for AddressBuf {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -517,14 +512,6 @@ impl TryFrom<ZString> for AddressBuf {
 impl From<&'_ Address> for ZString {
     fn from(address: &'_ Address) -> ZString {
         address.0.to_zstring()
-    }
-}
-
-#[cfg(feature = "parse")]
-impl<'a> Parse<'a> for &'a Address {
-    type Error = wire::Error;
-    fn parse(parser: &mut Parser<'a>) -> Result<Self, wire::Error> {
-        Ok(Address::from_zstr(parser.take_zstr_padded()?)?)
     }
 }
 

@@ -1,15 +1,11 @@
-use super::address::Error;
+use super::address::{self, Error, InvalidByte};
 use super::macros::define_owned_and_ref;
 use super::zstr::*;
 
 #[cfg(feature = "alloc")]
+use super::address::Address;
+#[cfg(feature = "alloc")]
 use super::address::AddressBuf;
-use super::address::{self, Address, InvalidByte};
-
-#[cfg(feature = "parse")]
-use super::parser::Parser;
-#[cfg(feature = "parse")]
-use super::wire::{self, Parse};
 
 #[cfg(feature = "serialize")]
 use super::macros::impl_both;
@@ -491,14 +487,6 @@ impl<'a> Iterator for SegmentRefIter<'a> {
     }
 }
 
-#[cfg(feature = "parse")]
-impl<'a> Parse<'a> for &'a Pattern {
-    type Error = wire::Error;
-    fn parse(parser: &mut Parser<'a>) -> Result<Self, Self::Error> {
-        Ok(Pattern::new(parser.take_zstr_padded()?)?)
-    }
-}
-
 #[cfg(feature = "serialize")]
 impl_both! {
     impl(Serialize) PatternBuf => Pattern {
@@ -517,6 +505,7 @@ pub struct Compiled {
     segments: Vec<CompiledSegment>,
 }
 
+#[cfg(feature = "alloc")]
 impl Compiled {
     pub fn segments(&self) -> &[CompiledSegment] {
         &self.segments
@@ -527,7 +516,6 @@ impl Compiled {
 pub struct CompiledSegment;
 
 pub type CharSetLookup = [bool; 256];
-#[allow(dead_code)]
 pub type CharSetLookupCompact = [u8; 32];
 
 #[derive(Debug, Clone)]
