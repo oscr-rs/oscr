@@ -655,6 +655,7 @@ mod tests {
         assert!(Pattern::new("/a//").is_ok());
         assert!(Pattern::new("///a/b").is_err());
         assert!(Pattern::new("/a///").is_err());
+        assert!(Pattern::new("/foo[0-9]///bar").is_err());
 
         assert!(Pattern::new("").is_err());
         assert!(Pattern::new("a").is_err());

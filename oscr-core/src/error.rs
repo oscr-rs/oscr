@@ -12,6 +12,24 @@ pub enum Error {
     Wire(wire::Error),
 }
 
+impl From<TagError> for Error {
+    fn from(err: TagError) -> Self {
+        Self::Tag(err)
+    }
+}
+
+impl From<address::Error> for Error {
+    fn from(err: address::Error) -> Self {
+        Self::Address(err)
+    }
+}
+
+impl From<wire::Error> for Error {
+    fn from(err: wire::Error) -> Self {
+        Self::Wire(err)
+    }
+}
+
 impl Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
